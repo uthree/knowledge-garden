@@ -19,12 +19,27 @@ a.at-list-item {
 }
 
 .kg-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--at-space-sm);
   min-width: 0;
   overflow: hidden;
   font-weight: var(--at-heading-weight);
   text-decoration: none;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.kg-brand__logo {
+  flex: none;
+  width: 20px;
+  height: 20px;
+}
+
+.kg-brand__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .kg-nav-toggle {
@@ -522,6 +537,11 @@ a.at-list-item {
   }
 
   .at-title-bar__title {
+    display: none;
+  }
+
+  /* The logo alone names the Garden here, leaving room for search. */
+  .kg-brand__name {
     display: none;
   }
 
