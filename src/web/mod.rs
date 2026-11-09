@@ -55,6 +55,7 @@ pub fn router(state: AppState) -> Router {
         .route("/settings/tokens/{id}/revoke", post(pages::revoke_token))
         .route("/settings/invites", post(pages::create_invite))
         .route("/assets/{*path}", get(asset))
+        .route("/favicon.ico", get(|| asset(Path("icon.ico".to_string()))))
         .layer(map_response(security_headers))
         .with_state(state)
 }
@@ -82,29 +83,45 @@ async fn security_headers(mut resp: Response) -> Response {
     resp
 }
 
-const ASSETS: &[(&str, &str, &str)] = &[
-    ("garden.css", "text/css", include_str!("../../assets/garden.css")),
-    ("garden.js", "text/javascript", include_str!("../../assets/garden.js")),
-    ("theme.js", "text/javascript", include_str!("../../assets/theme.js")),
+const ASSETS: &[(&str, &str, &[u8])] = &[
+    // The Knowledge Garden logo (assets/app-icons): small variant for tabs and the title bar.
+    (
+        "icon.svg",
+        "image/svg+xml",
+        include_bytes!("../../assets/app-icons/knowledge-garden/icon-small.svg"),
+    ),
+    (
+        "icon.ico",
+        "image/x-icon",
+        include_bytes!("../../assets/app-icons/knowledge-garden/icon.ico"),
+    ),
+    (
+        "icon-256.png",
+        "image/png",
+        include_bytes!("../../assets/app-icons/knowledge-garden/png/256.png"),
+    ),
+    ("garden.css", "text/css", include_bytes!("../../assets/garden.css")),
+    ("garden.js", "text/javascript", include_bytes!("../../assets/garden.js")),
+    ("theme.js", "text/javascript", include_bytes!("../../assets/theme.js")),
     (
         "atelier/atelier.css",
         "text/css",
-        include_str!("../../assets/atelier/atelier.css"),
+        include_bytes!("../../assets/atelier/atelier.css"),
     ),
     (
         "atelier/atelier.js",
         "text/javascript",
-        include_str!("../../assets/atelier/atelier.js"),
+        include_bytes!("../../assets/atelier/atelier.js"),
     ),
     (
         "atelier/generated/tokens.css",
         "text/css",
-        include_str!("../../assets/atelier/generated/tokens.css"),
+        include_bytes!("../../assets/atelier/generated/tokens.css"),
     ),
     (
         "atelier/generated/icons.js",
         "text/javascript",
-        include_str!("../../assets/atelier/generated/icons.js"),
+        include_bytes!("../../assets/atelier/generated/icons.js"),
     ),
 ];
 
