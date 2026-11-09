@@ -680,3 +680,99 @@ async fn list_filters_by_reproduction_and_date() {
         StatusCode::BAD_REQUEST
     );
 }
+
+#[tokio::test]
+async fn api_describes_itself_for_agents() {
+    let g = Garden::new().await;
+    for path in ["/", "/api/v1"] {
+        let (s, index) = g.get(path, None).await;
+        assert_eq!(s, StatusCode::OK, "{path}");
+        let endpoints = index["endpoints"].as_array().unwrap();
+        assert!(endpoints.iter().any(|e| e["path"] == "/api/v1/search"));
+        assert!(index["trust"].as_str().unwrap().contains("data"));
+    }
+}
+
+#[tokio::test]
+async fn entry_uris_resolve_to_the_entry() {
+    let g = Garden::new().await;
+    let e = g.entry(&g.admin, memo("dereferenceable", "public")).await;
+    let uri = e["entry"]["uri"].as_str().unwrap();
+    let path = uri.strip_prefix(BASE).unwrap();
+    let (s, got) = g.get(path, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(got["title"], "dereferenceable");
+
+    let private = g.entry(&g.admin, memo("hidden", "private")).await;
+    let (s, _) = g
+        .get(&format!("/entries/{}", private["entry"]["id"].as_str().unwrap()), None)
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn every_error_is_json() {
+    let g = Garden::new().await;
+    let cases = [
+        (Method::GET, "/no/such/path", None, StatusCode::NOT_FOUND),
+        (Method::DELETE, "/api/v1/entries", None, StatusCode::METHOD_NOT_ALLOWED),
+        (Method::GET, "/api/v1/entries?kind=bogus", None, StatusCode::BAD_REQUEST),
+        (
+            Method::POST,
+            "/api/v1/entries",
+            Some(json!({ "kind": "memo", "title": "no body" })),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ];
+    for (method, uri, body, expected) in cases {
+        let (s, v) = g.call(method.clone(), uri, Some(&g.admin), body).await;
+        assert_eq!(s, expected, "{method} {uri}: {v}");
+        assert!(v["error"]["code"].is_string(), "{method} {uri}: {v}");
+        assert!(v["error"]["message"].is_string(), "{method} {uri}: {v}");
+    }
+}
+
+#[tokio::test]
+async fn unknown_fields_are_rejected_instead_of_ignored() {
+    let g = Garden::new().await;
+    // `tag` instead of `tags` would otherwise silently drop the tags.
+    let (s, v) = g
+        .post(
+            "/api/v1/entries",
+            Some(&g.admin),
+            json!({ "kind": "memo", "title": "t", "body": "b", "tag": ["rust"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(v["error"]["message"].as_str().unwrap().contains("tag"), "{v}");
+
+    let (s, v) = g.get("/api/v1/search?query=rust", None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert!(v["error"]["message"].as_str().unwrap().contains("query"), "{v}");
+}
+
+#[tokio::test]
+async fn empty_revisions_are_rejected_and_versions_have_paths() {
+    let g = Garden::new().await;
+    let e = g.entry(&g.admin, memo("v1 title", "public")).await;
+    let id = e["entry"]["id"].as_str().unwrap();
+    let versions = format!("/api/v1/entries/{id}/versions");
+
+    let (s, v) = g.post(&versions, Some(&g.admin), json!({})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, v) = g.post(&versions, Some(&g.admin), json!({ "title": "v1 title" })).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    // `status` belongs to PATCH, so it is an unknown field here.
+    let (s, _) = g
+        .post(&versions, Some(&g.admin), json!({ "status": "retracted" }))
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let (s, _) = g.post(&versions, Some(&g.admin), json!({ "title": "v2 title" })).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, v1) = g.get(&format!("{versions}/1"), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v1["title"], "v1 title");
+    let (s, _) = g.get(&format!("{versions}/3"), None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
