@@ -2,7 +2,7 @@
 slug = "knowledge-garden"
 name = "Knowledge Garden"
 symbol = "Kn"
-number = 8
+number = 3
 version = "0.1.0"
 element = "green"
 ship = true
