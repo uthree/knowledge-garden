@@ -127,7 +127,15 @@ pub async fn api_index(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
-pub async fn no_route(method: Method, uri: Uri) -> Response {
+pub async fn no_route(
+    State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if method == Method::GET && crate::web::wants_html(&headers) {
+        return crate::web::not_found_page(&state);
+    }
     error_response(
         StatusCode::NOT_FOUND,
         format!(
@@ -151,12 +159,12 @@ fn error_response(status: StatusCode, message: String) -> Response {
 /// handlers use, so that clients can parse every error the same way.
 pub async fn json_errors(resp: Response) -> Response {
     let status = resp.status();
-    let is_json = resp
+    let keep = resp
         .headers()
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|ct| ct.starts_with("application/json"));
-    if !(status.is_client_error() || status.is_server_error()) || is_json {
+        .is_some_and(|ct| ct.starts_with("application/json") || ct.starts_with("text/html"));
+    if !(status.is_client_error() || status.is_server_error()) || keep {
         return resp;
     }
     let allow = resp.headers().get(ALLOW).cloned();

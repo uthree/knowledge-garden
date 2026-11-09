@@ -92,6 +92,15 @@ string_enum!(ReproResult { Reproduced => "reproduced", Partial => "partial", Fai
 
 pub const DEFAULT_SCOPES: &[Scope] = &[Scope::Read, Scope::EntriesWrite, Scope::CommentsWrite];
 
+/// The scopes of a user's own human tokens: the defaults, plus `admin` for admins.
+pub fn scopes_for_role(role: Role) -> Vec<Scope> {
+    let mut scopes = DEFAULT_SCOPES.to_vec();
+    if role == Role::Admin {
+        scopes.push(Scope::Admin);
+    }
+    scopes
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct User {
     pub id: String,

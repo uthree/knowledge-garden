@@ -27,6 +27,20 @@ pub struct NewToken {
     pub token_hash: String,
 }
 
+pub struct NewSession {
+    pub id_hash: String,
+    pub user_id: String,
+    pub token_id: String,
+    pub csrf: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// A signed-in browser session.
+pub struct Session {
+    pub principal: Principal,
+    pub csrf: String,
+}
+
 pub struct NewInvite {
     pub code_hash: String,
     pub role: Role,
@@ -153,6 +167,19 @@ pub trait AccountStore: Send + Sync {
     async fn list_invites(&self) -> Result<Vec<Invite>>;
     /// Atomically consumes an invite and creates the user with the invite's role.
     async fn redeem_invite(&self, code_hash: &str, username: &str, display_name: &str) -> Result<User>;
+
+    /// Sets (or with `None` clears) a local user's password hash.
+    async fn set_password(&self, user_id: &str, password_hash: Option<&str>) -> Result<()>;
+    /// A local user and their password hash, if they have one.
+    async fn password_login(&self, username: &str) -> Result<Option<(User, String)>>;
+    /// The user's unrevoked human token named `web` (or `web-2`, ...), which
+    /// browser sessions act through; created with `scopes` when missing.
+    async fn web_token(&self, user_id: &str, scopes: &[Scope]) -> Result<Token>;
+    async fn create_session(&self, session: NewSession) -> Result<()>;
+    /// An unexpired session whose token is not revoked.
+    async fn session(&self, id_hash: &str) -> Result<Option<Session>>;
+    async fn delete_session(&self, id_hash: &str) -> Result<()>;
+    async fn delete_user_sessions(&self, user_id: &str) -> Result<()>;
 }
 
 #[async_trait]

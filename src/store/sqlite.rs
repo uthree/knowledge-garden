@@ -57,6 +57,20 @@ impl SqliteStore {
         sqlx::migrate!("./migrations").run(&pool).await?;
         Ok(Self { pool })
     }
+
+    /// Writes a consistent copy of the whole database to `path` (which must not
+    /// exist yet). Safe while the server is running.
+    pub async fn backup_to(&self, path: &str) -> Result<()> {
+        let p = std::path::Path::new(path);
+        if p.exists() {
+            return Err(Error::Conflict(format!("{path} already exists")));
+        }
+        if let Some(dir) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir).map_err(Error::internal)?;
+        }
+        sqlx::query("VACUUM INTO ?").bind(path).execute(&self.pool).await?;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------- rows
@@ -619,6 +633,127 @@ impl AccountStore for SqliteStore {
             .await?;
         tx.commit().await?;
         self.find_user(username).await?.ok_or(Error::NotFound)
+    }
+
+    async fn set_password(&self, user_id: &str, password_hash: Option<&str>) -> Result<()> {
+        let r = sqlx::query("UPDATE users SET password_hash = ? WHERE id = ? AND origin IS NULL")
+            .bind(password_hash)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        if r.rows_affected() == 1 {
+            Ok(())
+        } else {
+            Err(Error::NotFound)
+        }
+    }
+
+    async fn password_login(&self, username: &str) -> Result<Option<(User, String)>> {
+        let hash: Option<Option<String>> =
+            sqlx::query_scalar("SELECT password_hash FROM users WHERE username = ? AND origin IS NULL")
+                .bind(username)
+                .fetch_optional(&self.pool)
+                .await?;
+        let Some(Some(hash)) = hash else {
+            return Ok(None);
+        };
+        Ok(self.find_user(username).await?.map(|u| (u, hash)))
+    }
+
+    async fn web_token(&self, user_id: &str, scopes: &[Scope]) -> Result<Token> {
+        let existing = sqlx::query_as::<_, TokenRow>(
+            "SELECT * FROM tokens WHERE user_id = ? AND kind = 'human' AND revoked_at IS NULL
+               AND (name = 'web' OR name GLOB 'web-[0-9]*')
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some(t) = existing {
+            return t.into_token();
+        }
+        let taken: Vec<String> = sqlx::query_scalar("SELECT name FROM tokens WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_all(&self.pool)
+            .await?;
+        let name = std::iter::once("web".to_string())
+            .chain((2..).map(|n| format!("web-{n}")))
+            .find(|n| !taken.contains(n))
+            .expect("an unused name");
+        // The secret is never shown: this token is only used through sessions.
+        let secret = crate::auth::generate_secret(crate::auth::TOKEN_PREFIX);
+        self.create_token(NewToken {
+            user_id: user_id.to_string(),
+            name,
+            kind: TokenKind::Human,
+            scopes: scopes.to_vec(),
+            token_hash: crate::auth::hash_secret(&secret),
+        })
+        .await
+    }
+
+    async fn create_session(&self, session: NewSession) -> Result<()> {
+        let at = now();
+        sqlx::query("DELETE FROM sessions WHERE expires_at <= ?")
+            .bind(&at)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO sessions (id_hash, user_id, token_id, csrf, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&session.id_hash)
+        .bind(&session.user_id)
+        .bind(&session.token_id)
+        .bind(&session.csrf)
+        .bind(&at)
+        .bind(ts(session.expires_at))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn session(&self, id_hash: &str) -> Result<Option<Session>> {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT s.token_id, s.csrf FROM sessions s JOIN tokens t ON t.id = s.token_id
+             WHERE s.id_hash = ? AND s.expires_at > ? AND t.revoked_at IS NULL",
+        )
+        .bind(id_hash)
+        .bind(now())
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((token_id, csrf)) = row else {
+            return Ok(None);
+        };
+        let token = sqlx::query_as::<_, TokenRow>("SELECT * FROM tokens WHERE id = ?")
+            .bind(&token_id)
+            .fetch_one(&self.pool)
+            .await?
+            .into_token()?;
+        let user = sqlx::query_as::<_, UserRow>("SELECT * FROM users WHERE id = ?")
+            .bind(&token.user_id)
+            .fetch_one(&self.pool)
+            .await?
+            .into_user()?;
+        Ok(Some(Session {
+            principal: Principal { user, token },
+            csrf,
+        }))
+    }
+
+    async fn delete_session(&self, id_hash: &str) -> Result<()> {
+        sqlx::query("DELETE FROM sessions WHERE id_hash = ?")
+            .bind(id_hash)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn delete_user_sessions(&self, user_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM sessions WHERE user_id = ?")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 
