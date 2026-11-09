@@ -223,6 +223,8 @@ impl EntryRow {
             status: parse(&self.status)?,
             id: self.id,
             uri: self.uri,
+            origin: self.origin,
+            is_local: self.is_local != 0,
             current_version: self.current_version,
             title: self.title,
             summary: self.summary,
@@ -349,6 +351,19 @@ fn push_entry_filter(qb: &mut QueryBuilder<Sqlite>, f: &EntryFilter, vis: &Visib
     }
     if let Some(author) = &f.author {
         qb.push(" AND u.username = ").push_bind(author.clone());
+    }
+    match f.origin.as_deref() {
+        None => {}
+        Some("local") => {
+            qb.push(" AND e.is_local = 1");
+        }
+        Some("remote") => {
+            qb.push(" AND e.is_local = 0");
+        }
+        Some(origin) => {
+            qb.push(" AND e.origin = ")
+                .push_bind(origin.trim_end_matches('/').to_string());
+        }
     }
     for tag in &f.tags_all {
         qb.push(" AND EXISTS (SELECT 1 FROM entry_tags et WHERE et.entry_id = e.id AND et.tag = ")
@@ -615,8 +630,8 @@ impl EntryStore for SqliteStore {
         let mut tx = self.pool.begin().await?;
         let at = now();
         sqlx::query(
-            "INSERT INTO entries (id, uri, origin, is_local, kind, visibility, status, author_id, current_version, created_at, updated_at)
-             VALUES (?, ?, ?, 1, ?, ?, ?, ?, 1, ?, ?)",
+            "INSERT INTO entries (id, uri, origin, is_local, kind, visibility, status, author_id, current_version, created_at, updated_at, ever_shared)
+             VALUES (?, ?, ?, 1, ?, ?, ?, ?, 1, ?, ?, ?)",
         )
         .bind(&entry.id)
         .bind(&entry.uri)
@@ -627,6 +642,7 @@ impl EntryStore for SqliteStore {
         .bind(&entry.author_id)
         .bind(&at)
         .bind(&at)
+        .bind(entry.visibility.is_shareable() as i64)
         .execute(&mut *tx)
         .await?;
         insert_version(&mut tx, &entry.id, 1, &entry.token_id, &entry.content, &at).await?;
@@ -637,18 +653,20 @@ impl EntryStore for SqliteStore {
     }
 
     async fn entry_access(&self, id: &str) -> Result<Option<EntryAccess>> {
-        let row: Option<(String, String, String, String, i64)> =
-            sqlx::query_as("SELECT id, uri, visibility, author_id, current_version FROM entries WHERE id = ?")
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await?;
-        row.map(|(id, uri, visibility, author_id, current_version)| {
+        let row: Option<(String, String, String, String, i64, i64)> = sqlx::query_as(
+            "SELECT id, uri, visibility, author_id, current_version, is_local FROM entries WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|(id, uri, visibility, author_id, current_version, is_local)| {
             Ok(EntryAccess {
                 id,
                 uri,
                 visibility: parse(&visibility)?,
                 author_id,
                 current_version,
+                is_local: is_local != 0,
             })
         })
         .transpose()
@@ -755,6 +773,9 @@ impl EntryStore for SqliteStore {
         qb.push_bind(now());
         if let Some(v) = update.visibility {
             qb.push(", visibility = ").push_bind(v.as_str());
+            if v.is_shareable() {
+                qb.push(", ever_shared = 1");
+            }
         }
         if let Some(s) = update.status {
             qb.push(", status = ").push_bind(s.as_str());
@@ -796,6 +817,12 @@ impl EntryStore for SqliteStore {
             Error::Conflict(_) => Error::Conflict("this link already exists".into()),
             other => other,
         })?;
+        // Links travel with the entry in the federation feed, so the entry counts as changed.
+        sqlx::query("UPDATE entries SET updated_at = ? WHERE id = ?")
+            .bind(now())
+            .bind(&link.source_id)
+            .execute(&self.pool)
+            .await?;
         Ok(id)
     }
 
@@ -1063,5 +1090,380 @@ impl SearchStore for SqliteStore {
             limit: q.filter.limit,
             offset: q.filter.offset,
         })
+    }
+}
+
+// ---------------------------------------------------------------- federation
+
+#[derive(sqlx::FromRow)]
+struct PeerRow {
+    id: String,
+    base_url: String,
+    name: String,
+    public_key: String,
+    status: String,
+    cursor: Option<String>,
+    last_sync_at: Option<DateTime<Utc>>,
+    last_error: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+impl PeerRow {
+    fn into_peer(self) -> Result<Peer> {
+        let status = match self.status.as_str() {
+            "approved" => PeerStatus::Approved,
+            "blocked" => PeerStatus::Blocked,
+            other => return Err(Error::Internal(format!("invalid peer status: {other}"))),
+        };
+        Ok(Peer {
+            id: self.id,
+            base_url: self.base_url,
+            name: self.name,
+            public_key: self.public_key,
+            status,
+            cursor: self.cursor,
+            last_sync_at: self.last_sync_at,
+            last_error: self.last_error,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+fn peer_status_str(s: PeerStatus) -> &'static str {
+    match s {
+        PeerStatus::Approved => "approved",
+        PeerStatus::Blocked => "blocked",
+    }
+}
+
+/// Finds or creates the stand-in user for a remote author.
+async fn remote_user(
+    conn: &mut sqlx::SqliteConnection,
+    origin: &str,
+    username: &str,
+    display_name: &str,
+) -> Result<String> {
+    sqlx::query(
+        "INSERT INTO users (id, username, display_name, role, created_at, origin) VALUES (?, ?, ?, 'member', ?, ?)
+         ON CONFLICT (username) DO UPDATE SET display_name = excluded.display_name WHERE users.origin = excluded.origin",
+    )
+    .bind(new_id())
+    .bind(username)
+    .bind(display_name)
+    .bind(now())
+    .bind(origin)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query_scalar("SELECT id FROM users WHERE username = ? AND origin = ?")
+        .bind(username)
+        .bind(origin)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or_else(|| Error::Conflict(format!("remote author '{username}' collides with a local user")))
+}
+
+/// Finds or creates the stand-in token for a remote author's agent or human client.
+/// These tokens are revoked from the start and their hash matches no secret.
+async fn remote_token(conn: &mut sqlx::SqliteConnection, user_id: &str, via: &PostedVia) -> Result<String> {
+    let at = now();
+    sqlx::query(
+        "INSERT INTO tokens (id, user_id, name, kind, scopes, token_hash, created_at, revoked_at)
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?) ON CONFLICT (user_id, name) DO NOTHING",
+    )
+    .bind(new_id())
+    .bind(user_id)
+    .bind(&via.name)
+    .bind(via.kind.as_str())
+    .bind(format!("remote:{}", new_id()))
+    .bind(&at)
+    .bind(&at)
+    .execute(&mut *conn)
+    .await?;
+    Ok(
+        sqlx::query_scalar("SELECT id FROM tokens WHERE user_id = ? AND name = ?")
+            .bind(user_id)
+            .bind(&via.name)
+            .fetch_one(&mut *conn)
+            .await?,
+    )
+}
+
+#[async_trait]
+impl FederationStore for SqliteStore {
+    async fn garden_key_seed(&self) -> Result<[u8; 32]> {
+        use base64::Engine;
+        use base64::engine::general_purpose::STANDARD;
+
+        let seed: [u8; 32] = rand::random();
+        sqlx::query(
+            "INSERT INTO garden_keys (id, secret_key, created_at) VALUES (1, ?, ?) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(STANDARD.encode(seed))
+        .bind(now())
+        .execute(&self.pool)
+        .await?;
+        let stored: String = sqlx::query_scalar("SELECT secret_key FROM garden_keys WHERE id = 1")
+            .fetch_one(&self.pool)
+            .await?;
+        STANDARD
+            .decode(stored)
+            .ok()
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            .ok_or_else(|| Error::Internal("stored garden key is invalid".into()))
+    }
+
+    async fn add_peer(&self, base_url: &str, name: &str, public_key: &str) -> Result<Peer> {
+        let id = new_id();
+        let at = now();
+        sqlx::query(
+            "INSERT INTO peers (id, base_url, name, public_key, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'approved', ?, ?)",
+        )
+        .bind(&id)
+        .bind(base_url)
+        .bind(name)
+        .bind(public_key)
+        .bind(&at)
+        .bind(&at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| match Error::from(e) {
+            Error::Conflict(_) => Error::Conflict(format!("{base_url} is already registered as a peer")),
+            other => other,
+        })?;
+        self.get_peer(&id).await?.ok_or(Error::NotFound)
+    }
+
+    async fn list_peers(&self) -> Result<Vec<Peer>> {
+        sqlx::query_as::<_, PeerRow>("SELECT * FROM peers ORDER BY created_at")
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(PeerRow::into_peer)
+            .collect()
+    }
+
+    async fn get_peer(&self, id: &str) -> Result<Option<Peer>> {
+        sqlx::query_as::<_, PeerRow>("SELECT * FROM peers WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(PeerRow::into_peer)
+            .transpose()
+    }
+
+    async fn find_peer(&self, base_url: &str) -> Result<Option<Peer>> {
+        sqlx::query_as::<_, PeerRow>("SELECT * FROM peers WHERE base_url = ?")
+            .bind(base_url)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(PeerRow::into_peer)
+            .transpose()
+    }
+
+    async fn set_peer_status(&self, id: &str, status: PeerStatus) -> Result<bool> {
+        let r = sqlx::query("UPDATE peers SET status = ?, updated_at = ? WHERE id = ?")
+            .bind(peer_status_str(status))
+            .bind(now())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected() == 1)
+    }
+
+    async fn record_sync(&self, id: &str, cursor: Option<&str>, error: Option<&str>) -> Result<()> {
+        sqlx::query(
+            "UPDATE peers SET cursor = coalesce(?, cursor), last_sync_at = ?, last_error = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(cursor)
+        .bind(now())
+        .bind(error)
+        .bind(now())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn feed_rows(&self, after: Option<(&str, &str)>, limit: i64) -> Result<Vec<FeedRow>> {
+        let mut qb = QueryBuilder::<Sqlite>::new(
+            "SELECT id, uri, updated_at, visibility FROM entries WHERE is_local = 1 AND ever_shared = 1",
+        );
+        if let Some((updated_at, id)) = after {
+            qb.push(" AND (updated_at > ")
+                .push_bind(updated_at.to_string())
+                .push(" OR (updated_at = ")
+                .push_bind(updated_at.to_string())
+                .push(" AND id > ")
+                .push_bind(id.to_string())
+                .push("))");
+        }
+        qb.push(" ORDER BY updated_at, id LIMIT ").push_bind(limit);
+        qb.build_query_as::<(String, String, String, String)>()
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(|(id, uri, updated_at, visibility)| {
+                Ok(FeedRow {
+                    id,
+                    uri,
+                    updated_at,
+                    visibility: parse(&visibility)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn raw_links(&self, entry_id: &str) -> Result<Vec<RawLink>> {
+        let rows: Vec<(String, String, Option<i64>, Option<String>)> = sqlx::query_as(
+            "SELECT relation, target_uri, target_version, note FROM entry_links WHERE source_id = ? ORDER BY created_at, id",
+        )
+        .bind(entry_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|(relation, target_uri, target_version, note)| {
+                Ok(RawLink {
+                    relation: parse(&relation)?,
+                    target_uri,
+                    target_version,
+                    note,
+                })
+            })
+            .collect()
+    }
+
+    async fn apply_mirror(&self, m: MirrorEntry) -> Result<MirrorOutcome> {
+        let mut tx = self.pool.begin().await?;
+        let author_id = remote_user(&mut tx, &m.origin, &m.author_username, &m.author_display_name).await?;
+        let token_id = remote_token(&mut tx, &author_id, &m.posted_via).await?;
+        let updated_at = ts(m.updated_at);
+
+        let existing: Option<(String, i64, i64, String)> =
+            sqlx::query_as("SELECT id, current_version, is_local, origin FROM entries WHERE uri = ?")
+                .bind(&m.uri)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let (id, outcome) = match existing {
+            Some((_, _, is_local, origin)) if is_local != 0 || origin != m.origin => {
+                return Err(Error::Conflict(format!("{} does not belong to {}", m.uri, m.origin)));
+            }
+            Some((id, current, _, _)) => {
+                if m.version > current {
+                    insert_version(
+                        &mut tx,
+                        &id,
+                        m.version,
+                        &token_id,
+                        &m.content,
+                        &ts(m.version_created_at),
+                    )
+                    .await?;
+                }
+                sqlx::query(
+                    "UPDATE entries SET kind = ?, visibility = ?, status = ?, author_id = ?, current_version = max(current_version, ?),
+                            updated_at = ?, remote_signature = ? WHERE id = ?",
+                )
+                .bind(m.kind.as_str())
+                .bind(m.visibility.as_str())
+                .bind(m.status.as_str())
+                .bind(&author_id)
+                .bind(m.version)
+                .bind(&updated_at)
+                .bind(&m.signature)
+                .bind(&id)
+                .execute(&mut *tx)
+                .await?;
+                (id, MirrorOutcome::Updated)
+            }
+            None => {
+                let id = new_id();
+                sqlx::query(
+                    "INSERT INTO entries (id, uri, origin, is_local, kind, visibility, status, author_id, current_version,
+                                          created_at, updated_at, remote_signature)
+                     VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(&id)
+                .bind(&m.uri)
+                .bind(&m.origin)
+                .bind(m.kind.as_str())
+                .bind(m.visibility.as_str())
+                .bind(m.status.as_str())
+                .bind(&author_id)
+                .bind(m.version)
+                .bind(ts(m.created_at))
+                .bind(&updated_at)
+                .bind(&m.signature)
+                .execute(&mut *tx)
+                .await?;
+                insert_version(
+                    &mut tx,
+                    &id,
+                    m.version,
+                    &token_id,
+                    &m.content,
+                    &ts(m.version_created_at),
+                )
+                .await?;
+                (id, MirrorOutcome::Created)
+            }
+        };
+
+        sqlx::query("DELETE FROM entry_tags WHERE entry_id = ?")
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+        insert_tags(&mut tx, &id, &m.tags).await?;
+
+        sqlx::query("DELETE FROM entry_links WHERE source_id = ?")
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+        for link in &m.links {
+            let target_id: Option<String> = sqlx::query_scalar("SELECT id FROM entries WHERE uri = ?")
+                .bind(&link.target_uri)
+                .fetch_optional(&mut *tx)
+                .await?;
+            sqlx::query(
+                "INSERT INTO entry_links (id, source_id, target_uri, target_id, target_version, relation, note, created_by, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            )
+            .bind(new_id())
+            .bind(&id)
+            .bind(&link.target_uri)
+            .bind(target_id)
+            .bind(link.target_version)
+            .bind(link.relation.as_str())
+            .bind(&link.note)
+            .bind(&author_id)
+            .bind(now())
+            .execute(&mut *tx)
+            .await?;
+        }
+        // Links that pointed at this URI before it was mirrored now resolve locally.
+        sqlx::query("UPDATE entry_links SET target_id = ? WHERE target_uri = ? AND target_id IS NULL")
+            .bind(&id)
+            .bind(&m.uri)
+            .execute(&mut *tx)
+            .await?;
+
+        reindex(&mut tx, &id).await?;
+        tx.commit().await?;
+        Ok(outcome)
+    }
+
+    async fn withdraw_mirror(&self, origin: &str, uri: &str) -> Result<bool> {
+        // Versions are immutable, so a withdrawn mirror is hidden rather than deleted:
+        // `private` entries are readable only by their author, and remote authors cannot sign in.
+        let r = sqlx::query(
+            "UPDATE entries SET visibility = 'private', updated_at = ? WHERE uri = ? AND origin = ? AND is_local = 0",
+        )
+        .bind(now())
+        .bind(uri)
+        .bind(origin)
+        .execute(&self.pool)
+        .await?;
+        Ok(r.rows_affected() == 1)
     }
 }

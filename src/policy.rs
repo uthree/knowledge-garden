@@ -29,8 +29,9 @@ pub fn can_read(config: &Config, viewer: Option<&Principal>, entry: &EntryAccess
 }
 
 /// Whether the caller may change an entry's content or metadata.
+/// Mirrored entries can only be changed by their origin Garden.
 pub fn can_edit(viewer: &Principal, entry: &EntryAccess) -> bool {
-    viewer.has(Scope::EntriesWrite) && (viewer.user.id == entry.author_id || viewer.is_admin())
+    entry.is_local && viewer.has(Scope::EntriesWrite) && (viewer.user.id == entry.author_id || viewer.is_admin())
 }
 
 /// Which entries appear in lists, tag counts and backlinks for a caller:
@@ -93,6 +94,7 @@ mod tests {
             visibility,
             author_id: "author".into(),
             current_version: 1,
+            is_local: true,
         }
     }
 

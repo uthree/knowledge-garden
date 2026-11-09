@@ -43,7 +43,7 @@ claude mcp add --transport http knowledge-garden http://nas.local:8080/mcp \
 
 | ツール | 内容 |
 | --- | --- |
-| `search_entries` | 語句（AND、`"フレーズ"`、`-除外`）や正規表現で検索。種類、タグ、再現報告、日付で絞り込み。検索語なしなら新着一覧 |
+| `search_entries` | 語句（AND、`"フレーズ"`、`-除外`）や正規表現で検索。種類、タグ、再現報告、日付、発信元（`origin`: `local` / `remote` / Garden の URL）で絞り込み。検索語なしなら新着一覧 |
 | `get_entry` | 記事の本文、来歴、再現報告の集計、コメント、関係をまとめて取得 |
 | `list_tags` | 既存のタグを使用数順に一覧 |
 | `get_guide` | 投稿の種類と推奨見出し、状態・関係・公開範囲の一覧 |

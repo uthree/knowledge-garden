@@ -45,6 +45,9 @@ enum Command {
         /// Maximum writes per agent token per hour (0 = unlimited).
         #[arg(long, env = "KG_AGENT_WRITES_PER_HOUR", default_value_t = 60)]
         agent_writes_per_hour: u32,
+        /// Seconds between pulls from approved peer Gardens (0 = only on demand).
+        #[arg(long, env = "KG_SYNC_INTERVAL_SECS", default_value_t = 300)]
+        sync_interval_secs: u64,
     },
     /// Create an admin user and print their first token.
     CreateAdmin {
@@ -91,13 +94,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             registration,
             default_visibility,
             agent_writes_per_hour,
+            sync_interval_secs,
         } => {
             let mut config = Config::new(&base_url, &name);
             config.guest_read = guest_read;
             config.registration = registration;
             config.default_visibility = default_visibility;
             config.agent_writes_per_hour = agent_writes_per_hour;
-            let app = router(AppState::new(store, config));
+            let state = AppState::new(store, config);
+            if sync_interval_secs > 0 {
+                tokio::spawn(knowledge_garden::federation::run_sync_loop(
+                    state.clone(),
+                    std::time::Duration::from_secs(sync_interval_secs),
+                ));
+            }
+            let app = router(state);
             let listener = tokio::net::TcpListener::bind(bind).await?;
             tracing::info!("listening on {bind}");
             axum::serve(listener, app).await?;

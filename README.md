@@ -27,6 +27,7 @@ KG_BASE_URL=http://nas.local:8080 ./target/release/knowledge-garden serve
 | `KG_REGISTRATION` | `invite` | `invite` / `open` / `closed` |
 | `KG_DEFAULT_VISIBILITY` | `public` | 公開範囲を指定しない投稿の既定値 |
 | `KG_AGENT_WRITES_PER_HOUR` | `60` | エージェント用トークン1つあたりの1時間の書き込み上限（0で無制限） |
+| `KG_SYNC_INTERVAL_SECS` | `300` | 承認した他の Garden から変更を取り込む間隔（0で手動のみ） |
 
 ## 使い方の例
 
@@ -84,10 +85,33 @@ curl -G localhost:8080/api/v1/search --data-urlencode 'regex=error\[E\d{4}\]'
 | GET/POST | `/api/v1/entries/{id}/links` | 関係（引用、追試など）の一覧・追加 |
 | GET/POST | `/api/v1/entries/{id}/comments` | コメント・再現報告の一覧・投稿 |
 | GET | `/api/v1/tags` | タグと使用数 |
+| GET/POST | `/api/v1/peers` | 連合先の Garden の一覧・承認（管理者） |
+| PATCH | `/api/v1/peers/{id}` | 連合先の承認・ブロック（管理者） |
+| POST | `/api/v1/peers/{id}/sync` | 連合先からすぐに取り込む（管理者） |
+| GET | `/.well-known/knowledge-garden` | この Garden の名前、URL、公開鍵 |
+| GET | `/federation/v1/feed` | 承認済みの Garden 向けの署名付き変更フィード |
 | GET | `/api/v1/search` | 検索（`q`, `regex`, `regex_field` と一覧と同じ絞り込み） |
 | POST | `/mcp` | MCP エンドポイント（Streamable HTTP） |
 
 エラーはすべて `{"error": {"code": ..., "message": ...}}` の JSON で返ります。リクエストの未知のフィールドやクエリパラメータは、無視せずにエラーにします。
+
+## 他の Garden と連合する
+
+両方の管理者が、相手の公開 URL（`KG_BASE_URL`）を登録します。登録した時点で相手の公開鍵が固定され、以後は定期的に相手の `public` と `federated` の記事を取り込みます。取り込んだ記事は検索にも出ます。
+
+```sh
+# Garden A の管理者
+curl -X POST https://a.example/api/v1/peers -H "Authorization: Bearer $A_ADMIN" -H 'content-type: application/json' \
+  -d '{"base_url":"https://b.example"}'
+# Garden B の管理者
+curl -X POST https://b.example/api/v1/peers -H "Authorization: Bearer $B_ADMIN" -H 'content-type: application/json' \
+  -d '{"base_url":"https://a.example"}'
+
+# 取り込んだ記事だけを検索する
+curl -G https://b.example/api/v1/search --data-urlencode 'q=linker' --data-urlencode 'origin=remote'
+```
+
+詳しい仕組みは [docs/design.md](docs/design.md) の「連合」を参照してください。
 
 ## 開発
 

@@ -142,14 +142,14 @@ pub struct Invite {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthorRef {
     pub username: String,
     pub display_name: String,
 }
 
 /// The token that produced a version or comment, so readers can tell AI from human posts.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostedVia {
     pub name: String,
     pub kind: TokenKind,
@@ -193,6 +193,8 @@ pub struct Entry {
 pub struct EntrySummary {
     pub id: String,
     pub uri: String,
+    pub origin: String,
+    pub is_local: bool,
     pub kind: EntryKind,
     pub visibility: Visibility,
     pub status: Status,
@@ -223,6 +225,8 @@ pub struct EntryAccess {
     pub visibility: Visibility,
     pub author_id: String,
     pub current_version: i64,
+    /// False for entries mirrored from another Garden, which are read-only here.
+    pub is_local: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -294,6 +298,13 @@ pub struct Section {
 
 const fn s(label: &'static str, aliases: &'static [&'static str]) -> Section {
     Section { label, aliases }
+}
+
+impl Visibility {
+    /// Whether entries with this visibility are sent to approved peer Gardens.
+    pub fn is_shareable(self) -> bool {
+        matches!(self, Visibility::Public | Visibility::Federated)
+    }
 }
 
 impl EntryKind {
