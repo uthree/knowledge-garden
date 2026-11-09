@@ -32,14 +32,6 @@ pub struct RegisterRequest {
     pub display_name: Option<String>,
 }
 
-fn scopes_for(role: Role) -> Vec<Scope> {
-    let mut scopes = DEFAULT_SCOPES.to_vec();
-    if role == Role::Admin {
-        scopes.push(Scope::Admin);
-    }
-    scopes
-}
-
 /// Creates a user and returns their first (human) token.
 pub async fn register(
     State(state): State<AppState>,
@@ -74,7 +66,7 @@ pub async fn register(
             user_id: user.id.clone(),
             name: "default".into(),
             kind: TokenKind::Human,
-            scopes: scopes_for(user.role),
+            scopes: scopes_for_role(user.role),
             token_hash: hash_secret(&secret),
         })
         .await?;

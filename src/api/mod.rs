@@ -1,9 +1,9 @@
-mod accounts;
-mod comments;
-mod entries;
+pub(crate) mod accounts;
+pub(crate) mod comments;
+pub(crate) mod entries;
 mod federation;
 pub(crate) mod index;
-mod search;
+pub(crate) mod search;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
@@ -36,12 +36,11 @@ pub fn rest_router(state: AppState) -> Router {
         .route("/peers/{id}/sync", post(federation::sync_now));
 
     Router::new()
-        .route("/", get(index::api_index))
         .route("/health", get(|| async { "ok" }))
         .route(crate::federation::WELL_KNOWN_PATH, get(federation::well_known))
         .route(crate::federation::FEED_PATH, get(federation::feed))
-        // Entry URIs (`<base_url>/entries/<id>`) resolve to the entry itself.
-        .route("/entries/{id}", get(entries::get))
+        // `/` and entry URIs (`<base_url>/entries/<id>`) are served by the web
+        // router, which answers JSON to clients that do not ask for HTML.
         .nest("/api/v1", api)
         .fallback(index::no_route)
         .layer(map_response(index::json_errors))
@@ -49,9 +48,11 @@ pub fn rest_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// The full application: the REST API plus the MCP endpoint at `/mcp`,
-/// which forwards tool calls to the REST API.
+/// The full application: the REST API, the MCP endpoint at `/mcp` (which
+/// forwards tool calls to the REST API) and the web UI for people.
 pub fn router(state: AppState) -> Router {
     let rest = rest_router(state.clone());
-    rest.clone().merge(crate::mcp::router(state, rest))
+    rest.clone()
+        .merge(crate::mcp::router(state.clone(), rest))
+        .merge(crate::web::router(state))
 }

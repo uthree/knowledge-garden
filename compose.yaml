@@ -1,0 +1,20 @@
+# docker compose up -d
+# See README.md ("NAS で動かす") for first-time setup, backups and restores.
+services:
+  garden:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # The address people and other Gardens use to reach this one. Entry URIs are
+      # built from it, so set it before the first post and do not change it later.
+      KG_BASE_URL: http://nas.local:8080
+      KG_NAME: Knowledge Garden
+      # KG_REGISTRATION: invite        # invite | open | closed
+      # KG_GUEST_READ: "true"          # let people read public entries without signing in
+      # KG_SYNC_INTERVAL_SECS: "300"   # how often to pull from approved peer Gardens
+    volumes:
+      # The database and backups live here. The container runs as uid 1000:
+      # `sudo chown -R 1000:1000 data` once if the folder belongs to another user.
+      - ./data:/data

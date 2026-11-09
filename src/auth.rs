@@ -24,11 +24,54 @@ pub fn hash_secret(secret: &str) -> String {
     hex::encode(Sha256::digest(secret.as_bytes()))
 }
 
+pub const MIN_PASSWORD_CHARS: usize = 10;
+const MAX_PASSWORD_CHARS: usize = 256;
+
+pub fn validate_password(password: &str) -> Result<(), String> {
+    let n = password.chars().count();
+    if n < MIN_PASSWORD_CHARS {
+        return Err(format!("パスワードは {MIN_PASSWORD_CHARS} 文字以上にしてください"));
+    }
+    if n > MAX_PASSWORD_CHARS {
+        return Err(format!("パスワードは {MAX_PASSWORD_CHARS} 文字以下にしてください"));
+    }
+    Ok(())
+}
+
+/// Hashes a password with Argon2id (on a blocking thread: it is deliberately slow).
+pub async fn hash_password(password: String) -> Result<String, Error> {
+    use argon2::password_hash::PasswordHasher;
+    tokio::task::spawn_blocking(move || {
+        argon2::Argon2::default()
+            .hash_password(password.as_bytes())
+            .map(|h| h.to_string())
+            .map_err(Error::internal)
+    })
+    .await
+    .map_err(Error::internal)?
+}
+
+/// Checks a password against an Argon2 PHC string.
+pub async fn verify_password(password: String, hash: String) -> bool {
+    use argon2::password_hash::PasswordVerifier;
+    use argon2::password_hash::phc::PasswordHash;
+    tokio::task::spawn_blocking(move || {
+        PasswordHash::new(&hash).is_ok_and(|h| {
+            argon2::Argon2::default()
+                .verify_password(password.as_bytes(), &h)
+                .is_ok()
+        })
+    })
+    .await
+    .unwrap_or(false)
+}
+
 /// The caller, if a valid bearer token was given. An invalid token is an error,
 /// not a silent fallback to guest access.
 pub struct Viewer(pub Option<Principal>);
 
 /// A caller that must be authenticated.
+#[derive(Clone)]
 pub struct Auth(pub Principal);
 
 impl Auth {
@@ -87,5 +130,15 @@ mod tests {
         assert!(a.starts_with("kg_") && a.len() == 3 + 64);
         assert_eq!(hash_secret(&a), hash_secret(&a));
         assert_ne!(hash_secret(&a), hash_secret(&b));
+    }
+
+    #[tokio::test]
+    async fn passwords_round_trip() {
+        let h = hash_password("correct horse battery".into()).await.unwrap();
+        assert!(h.starts_with("$argon2id$"));
+        assert!(verify_password("correct horse battery".into(), h.clone()).await);
+        assert!(!verify_password("wrong password!".into(), h.clone()).await);
+        assert!(!verify_password("x".into(), "not a hash".into()).await);
+        assert!(validate_password("short").is_err());
     }
 }

@@ -38,6 +38,18 @@ impl Error {
         Self::Internal(msg.to_string())
     }
 
+    pub fn status(&self) -> StatusCode {
+        self.status_and_code().0
+    }
+
+    /// Errors that a person can fix by changing what they sent (shown next to the form).
+    pub fn is_correctable(&self) -> bool {
+        matches!(
+            self,
+            Error::BadRequest(_) | Error::Forbidden(_) | Error::TooManyRequests(_)
+        )
+    }
+
     fn status_and_code(&self) -> (StatusCode, &'static str) {
         match self {
             Error::NotFound => (StatusCode::NOT_FOUND, "not_found"),

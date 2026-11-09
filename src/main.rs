@@ -55,6 +55,13 @@ enum Command {
         #[arg(long)]
         display_name: Option<String>,
     },
+    /// Set a user's password for signing in to the web UI (read from stdin).
+    SetPassword { username: String },
+    /// Write a consistent copy of the database to a new file (safe while serving).
+    Backup {
+        /// Path of the copy, e.g. /data/backups/garden-2026-11-09.db
+        path: String,
+    },
     /// Create an invite code (attributed to an existing admin).
     CreateInvite {
         /// Username of the admin issuing the invite.
@@ -71,6 +78,27 @@ enum Command {
 enum RoleArg {
     Admin,
     Member,
+}
+
+/// Reads a password from stdin: twice when typed at a terminal, once when piped.
+fn read_password() -> Result<String, Box<dyn std::error::Error>> {
+    use std::io::{BufRead, IsTerminal, Write};
+    let stdin = std::io::stdin();
+    let interactive = stdin.is_terminal();
+    let read = |prompt: &str| -> std::io::Result<String> {
+        if interactive {
+            eprint!("{prompt}");
+            std::io::stderr().flush()?;
+        }
+        let mut line = String::new();
+        stdin.lock().read_line(&mut line)?;
+        Ok(line.trim_end_matches(['\r', '\n']).to_string())
+    };
+    let password = read("new password (shown as you type): ")?;
+    if interactive && read("again: ")? != password {
+        return Err("the passwords do not match".into());
+    }
+    Ok(password)
 }
 
 fn parse_visibility(s: &str) -> Result<Visibility, String> {
@@ -135,6 +163,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .await?;
             println!("created admin '{}'. token (shown once):\n{secret}", user.username);
+        }
+        Command::SetPassword { username } => {
+            let user = store.find_user(&username).await?.ok_or("no such user")?;
+            let password = read_password()?;
+            knowledge_garden::auth::validate_password(&password)?;
+            let hash = knowledge_garden::auth::hash_password(password).await?;
+            store.set_password(&user.id, Some(&hash)).await?;
+            store.delete_user_sessions(&user.id).await?;
+            println!("password set for '{}'", user.username);
+        }
+        Command::Backup { path } => {
+            store.backup_to(&path).await?;
+            println!("wrote a copy of the database to {path}");
         }
         Command::CreateInvite { by, role, days } => {
             let admin = store

@@ -12,6 +12,7 @@ pub mod policy;
 pub mod rate_limit;
 pub mod search;
 pub mod store;
+pub mod web;
 
 use std::sync::Arc;
 
@@ -23,6 +24,8 @@ pub struct AppState {
     pub store: Arc<dyn Store>,
     pub config: Arc<Config>,
     pub write_limiter: Arc<rate_limit::RateLimiter>,
+    /// Caps password attempts per username.
+    pub login_limiter: Arc<rate_limit::RateLimiter>,
     /// How this Garden reaches other Gardens (replaced in tests).
     pub peer_client: Arc<dyn federation::PeerClient>,
 }
@@ -37,6 +40,10 @@ impl AppState {
             store: Arc::new(store),
             config: Arc::new(config),
             write_limiter,
+            login_limiter: Arc::new(rate_limit::RateLimiter::new(
+                10,
+                std::time::Duration::from_secs(15 * 60),
+            )),
             peer_client: Arc::new(federation::HttpPeerClient::new()),
         }
     }
