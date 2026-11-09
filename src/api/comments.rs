@@ -23,6 +23,7 @@ pub async fn list(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateCommentRequest {
     #[serde(default = "comment_kind")]
     pub kind: CommentKind,

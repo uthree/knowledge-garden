@@ -253,6 +253,22 @@ async fn foreign_origins_are_rejected() {
 }
 
 #[tokio::test]
+async fn get_on_mcp_is_a_json_405() {
+    let g = Garden::new().await;
+    let (s, v) = g.get("/mcp", None).await;
+    assert_eq!(s, StatusCode::METHOD_NOT_ALLOWED);
+    assert!(v["error"]["message"].is_string(), "{v}");
+    let (_, index) = g.get("/api/v1", None).await;
+    assert!(
+        index["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["path"] == "/mcp")
+    );
+}
+
+#[tokio::test]
 async fn agent_writes_are_rate_limited() {
     let mut config = Config::new(BASE, "test");
     config.agent_writes_per_hour = 2;

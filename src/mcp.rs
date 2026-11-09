@@ -46,6 +46,7 @@ struct McpState {
 pub fn router(app: AppState, rest: Router) -> Router {
     Router::new()
         .route("/mcp", post(handle).get(method_not_allowed).delete(method_not_allowed))
+        .layer(axum::middleware::map_response(crate::api::index::json_errors))
         .with_state(McpState { app, rest })
 }
 

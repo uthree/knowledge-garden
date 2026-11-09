@@ -1,10 +1,12 @@
 mod accounts;
 mod comments;
 mod entries;
+pub(crate) mod index;
 mod search;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
+use axum::middleware::map_response;
 use axum::routing::{delete, get, post};
 
 use crate::AppState;
@@ -12,6 +14,7 @@ use crate::AppState;
 /// The REST API (`/health` and `/api/v1`).
 pub fn rest_router(state: AppState) -> Router {
     let api = Router::new()
+        .route("/", get(index::api_index))
         .route("/garden", get(accounts::garden_info))
         .route("/kinds", get(entries::kinds))
         .route("/register", post(accounts::register))
@@ -22,14 +25,20 @@ pub fn rest_router(state: AppState) -> Router {
         .route("/entries", get(entries::list).post(entries::create))
         .route("/entries/{id}", get(entries::get).patch(entries::patch))
         .route("/entries/{id}/versions", get(entries::versions).post(entries::revise))
+        .route("/entries/{id}/versions/{version}", get(entries::get_version))
         .route("/entries/{id}/links", get(entries::links).post(entries::add_link))
         .route("/entries/{id}/comments", get(comments::list).post(comments::create))
         .route("/tags", get(entries::tags))
         .route("/search", get(search::search));
 
     Router::new()
+        .route("/", get(index::api_index))
         .route("/health", get(|| async { "ok" }))
+        // Entry URIs (`<base_url>/entries/<id>`) resolve to the entry itself.
+        .route("/entries/{id}", get(entries::get))
         .nest("/api/v1", api)
+        .fallback(index::no_route)
+        .layer(map_response(index::json_errors))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .with_state(state)
 }

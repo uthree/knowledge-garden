@@ -12,6 +12,7 @@ use crate::search::{Highlighter, compile_regex, parse_query};
 use crate::store::{RegexField, SearchQuery};
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SearchParams {
     /// Terms (all must match), `"phrases"` and `-exclusions`.
     pub q: Option<String>,

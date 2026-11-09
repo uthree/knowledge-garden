@@ -90,6 +90,7 @@ fn content(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LinkRequest {
     /// A local entry id, a local entry URI, or the URI of an entry on another Garden.
     pub target: String,
@@ -156,6 +157,7 @@ async fn store_link(state: &AppState, source: &EntryAccess, by: &Principal, link
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateEntryRequest {
     pub kind: EntryKind,
     pub title: String,
@@ -223,6 +225,7 @@ pub async fn create(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GetQuery {
     pub version: Option<i64>,
 }
@@ -239,6 +242,7 @@ pub async fn get(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ListQuery {
     pub kind: Option<EntryKind>,
     pub status: Option<Status>,
@@ -309,6 +313,7 @@ pub async fn versions(
 
 /// Fields left out are copied from the current version.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReviseRequest {
     pub title: Option<String>,
     pub summary: Option<String>,
@@ -327,17 +332,28 @@ pub async fn revise(
     let current = state.store.get_entry(&id, None).await?.ok_or(Error::NotFound)?;
     let provenance = match req.provenance {
         Some(p) => validate_provenance(Some(p))?,
-        None => current.provenance,
+        None => current.provenance.clone(),
     };
-    let body = req.body.unwrap_or(current.body);
+    let body = req.body.unwrap_or_else(|| current.body.clone());
     let warnings = current.kind.content_warnings(&body, &provenance);
     let content = content(
-        &req.title.unwrap_or(current.title),
-        req.summary.or(current.summary),
+        &req.title.unwrap_or_else(|| current.title.clone()),
+        req.summary.or_else(|| current.summary.clone()),
         body,
-        req.lang.or(current.lang),
+        req.lang.or_else(|| current.lang.clone()),
         provenance,
     )?;
+    if content.title == current.title
+        && content.summary == current.summary
+        && content.body == current.body
+        && content.lang == current.lang
+        && content.provenance == current.provenance
+    {
+        return Err(Error::bad_request(
+            "nothing changed: give at least one of title, summary, body, lang or provenance with a new value \
+             (visibility, status and tags are changed with PATCH /api/v1/entries/{id})",
+        ));
+    }
     state.write_limiter.check_write(&auth.0)?;
     let version = state.store.add_version(&id, &auth.0.token.id, content).await?;
     let entry = state
@@ -352,6 +368,7 @@ pub async fn revise(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PatchRequest {
     pub visibility: Option<Visibility>,
     pub status: Option<Status>,
@@ -408,6 +425,7 @@ pub async fn add_link(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TagsQuery {
     pub limit: Option<i64>,
 }
@@ -424,4 +442,19 @@ pub async fn tags(
             .tag_counts(&vis, q.limit.unwrap_or(100).clamp(1, 500))
             .await?,
     ))
+}
+
+/// `GET /entries/{id}/versions/{n}`, the same as `GET /entries/{id}?version=n`.
+pub async fn get_version(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path((id, version)): Path<(String, i64)>,
+) -> Result<Json<Entry>> {
+    get(
+        State(state),
+        viewer,
+        Path(id),
+        Query(GetQuery { version: Some(version) }),
+    )
+    .await
 }
