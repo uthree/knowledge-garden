@@ -1,7 +1,7 @@
 mod accounts;
 mod comments;
 mod entries;
-mod index;
+pub(crate) mod index;
 mod search;
 
 use axum::Router;
@@ -11,7 +11,8 @@ use axum::routing::{delete, get, post};
 
 use crate::AppState;
 
-pub fn router(state: AppState) -> Router {
+/// The REST API (`/health` and `/api/v1`).
+pub fn rest_router(state: AppState) -> Router {
     let api = Router::new()
         .route("/", get(index::api_index))
         .route("/garden", get(accounts::garden_info))
@@ -40,4 +41,11 @@ pub fn router(state: AppState) -> Router {
         .layer(map_response(index::json_errors))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .with_state(state)
+}
+
+/// The full application: the REST API plus the MCP endpoint at `/mcp`,
+/// which forwards tool calls to the REST API.
+pub fn router(state: AppState) -> Router {
+    let rest = rest_router(state.clone());
+    rest.clone().merge(crate::mcp::router(state, rest))
 }

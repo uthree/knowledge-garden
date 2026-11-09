@@ -21,6 +21,8 @@ pub enum Error {
     Forbidden(String),
     #[error("{0}")]
     Conflict(String),
+    #[error("{0}")]
+    TooManyRequests(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -43,6 +45,7 @@ impl Error {
             Error::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "unauthorized"),
             Error::Forbidden(_) => (StatusCode::FORBIDDEN, "forbidden"),
             Error::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
+            Error::TooManyRequests(_) => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             Error::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }
     }

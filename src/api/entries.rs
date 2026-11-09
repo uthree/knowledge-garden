@@ -189,6 +189,7 @@ pub async fn create(
         links.push(resolve_link(&state, &auth.0, l).await?);
     }
 
+    state.write_limiter.check_write(&auth.0)?;
     let id = uuid::Uuid::now_v7().to_string();
     let uri = state.config.entry_uri(&id);
     state
@@ -353,6 +354,7 @@ pub async fn revise(
              (visibility, status and tags are changed with PATCH /api/v1/entries/{id})",
         ));
     }
+    state.write_limiter.check_write(&auth.0)?;
     let version = state.store.add_version(&id, &auth.0.token.id, content).await?;
     let entry = state
         .store

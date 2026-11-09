@@ -13,6 +13,11 @@ use crate::AppState;
 /// (method, path, description) for every endpoint under `/api/v1`.
 const ENDPOINTS: &[(&str, &str, &str)] = &[
     ("GET", "/api/v1", "this index"),
+    (
+        "POST",
+        "/mcp",
+        "MCP endpoint (Streamable HTTP, JSON responses) with the same permissions as this API",
+    ),
     ("GET", "/api/v1/garden", "settings of this Garden"),
     (
         "GET",
