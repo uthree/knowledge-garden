@@ -1,0 +1,146 @@
+use std::net::SocketAddr;
+
+use clap::{Parser, Subcommand};
+use knowledge_garden::auth::{INVITE_PREFIX, TOKEN_PREFIX, generate_secret, hash_secret};
+use knowledge_garden::config::{Config, Registration};
+use knowledge_garden::model::{DEFAULT_SCOPES, Role, Scope, TokenKind, Visibility, validate_username};
+use knowledge_garden::store::sqlite::SqliteStore;
+use knowledge_garden::store::{AccountStore, NewInvite, NewToken, NewUser};
+use knowledge_garden::{AppState, router};
+
+#[derive(Parser)]
+#[command(version, about = "Knowledge Garden: a knowledge base for coding agents and humans")]
+struct Cli {
+    /// SQLite database URL.
+    #[arg(
+        long,
+        env = "KG_DATABASE",
+        default_value = "sqlite://knowledge-garden.db",
+        global = true
+    )]
+    database: String,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Run the HTTP server.
+    Serve {
+        #[arg(long, env = "KG_BIND", default_value = "0.0.0.0:8080")]
+        bind: SocketAddr,
+        /// Public base URL; entry URIs are built from it.
+        #[arg(long, env = "KG_BASE_URL", default_value = "http://localhost:8080")]
+        base_url: String,
+        #[arg(long, env = "KG_NAME", default_value = "Knowledge Garden")]
+        name: String,
+        /// Allow guests without a token to read public entries.
+        #[arg(long, env = "KG_GUEST_READ", default_value_t = true, action = clap::ArgAction::Set)]
+        guest_read: bool,
+        #[arg(long, env = "KG_REGISTRATION", value_enum, default_value = "invite")]
+        registration: Registration,
+        /// Visibility for new entries that do not specify one.
+        #[arg(long, env = "KG_DEFAULT_VISIBILITY", default_value = "public", value_parser = parse_visibility)]
+        default_visibility: Visibility,
+    },
+    /// Create an admin user and print their first token.
+    CreateAdmin {
+        username: String,
+        #[arg(long)]
+        display_name: Option<String>,
+    },
+    /// Create an invite code (attributed to an existing admin).
+    CreateInvite {
+        /// Username of the admin issuing the invite.
+        #[arg(long)]
+        by: String,
+        #[arg(long, value_enum, default_value = "member")]
+        role: RoleArg,
+        #[arg(long, default_value_t = 7)]
+        days: i64,
+    },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum RoleArg {
+    Admin,
+    Member,
+}
+
+fn parse_visibility(s: &str) -> Result<Visibility, String> {
+    s.parse()
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .init();
+    let cli = Cli::parse();
+    let store = SqliteStore::connect(&cli.database).await?;
+
+    match cli.command {
+        Command::Serve {
+            bind,
+            base_url,
+            name,
+            guest_read,
+            registration,
+            default_visibility,
+        } => {
+            let mut config = Config::new(&base_url, &name);
+            config.guest_read = guest_read;
+            config.registration = registration;
+            config.default_visibility = default_visibility;
+            let app = router(AppState::new(store, config));
+            let listener = tokio::net::TcpListener::bind(bind).await?;
+            tracing::info!("listening on {bind}");
+            axum::serve(listener, app).await?;
+        }
+        Command::CreateAdmin { username, display_name } => {
+            validate_username(&username)?;
+            let user = store
+                .create_user(NewUser {
+                    display_name: display_name.unwrap_or_else(|| username.clone()),
+                    username,
+                    role: Role::Admin,
+                })
+                .await?;
+            let secret = generate_secret(TOKEN_PREFIX);
+            let mut scopes = DEFAULT_SCOPES.to_vec();
+            scopes.push(Scope::Admin);
+            store
+                .create_token(NewToken {
+                    user_id: user.id,
+                    name: "default".into(),
+                    kind: TokenKind::Human,
+                    scopes,
+                    token_hash: hash_secret(&secret),
+                })
+                .await?;
+            println!("created admin '{}'. token (shown once):\n{secret}", user.username);
+        }
+        Command::CreateInvite { by, role, days } => {
+            let admin = store
+                .find_user(&by)
+                .await?
+                .filter(|u| u.role == Role::Admin)
+                .ok_or("no such admin")?;
+            let code = generate_secret(INVITE_PREFIX);
+            store
+                .create_invite(NewInvite {
+                    code_hash: hash_secret(&code),
+                    role: match role {
+                        RoleArg::Admin => Role::Admin,
+                        RoleArg::Member => Role::Member,
+                    },
+                    created_by: admin.id,
+                    note: None,
+                    expires_at: (days > 0).then(|| chrono::Utc::now() + chrono::Duration::days(days)),
+                })
+                .await?;
+            println!("invite code (shown once):\n{code}");
+        }
+    }
+    Ok(())
+}
