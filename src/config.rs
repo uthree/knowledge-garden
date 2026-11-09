@@ -22,6 +22,8 @@ pub struct Config {
     pub guest_read: bool,
     pub registration: Registration,
     pub default_visibility: Visibility,
+    /// Maximum writes (new entries, revisions, comments) per agent token per hour; 0 = unlimited.
+    pub agent_writes_per_hour: u32,
 }
 
 impl Config {
@@ -32,6 +34,7 @@ impl Config {
             guest_read: true,
             registration: Registration::Invite,
             default_visibility: Visibility::Public,
+            agent_writes_per_hour: 60,
         }
     }
 

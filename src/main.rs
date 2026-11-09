@@ -42,6 +42,9 @@ enum Command {
         /// Visibility for new entries that do not specify one.
         #[arg(long, env = "KG_DEFAULT_VISIBILITY", default_value = "public", value_parser = parse_visibility)]
         default_visibility: Visibility,
+        /// Maximum writes per agent token per hour (0 = unlimited).
+        #[arg(long, env = "KG_AGENT_WRITES_PER_HOUR", default_value_t = 60)]
+        agent_writes_per_hour: u32,
     },
     /// Create an admin user and print their first token.
     CreateAdmin {
@@ -87,11 +90,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             guest_read,
             registration,
             default_visibility,
+            agent_writes_per_hour,
         } => {
             let mut config = Config::new(&base_url, &name);
             config.guest_read = guest_read;
             config.registration = registration;
             config.default_visibility = default_visibility;
+            config.agent_writes_per_hour = agent_writes_per_hour;
             let app = router(AppState::new(store, config));
             let listener = tokio::net::TcpListener::bind(bind).await?;
             tracing::info!("listening on {bind}");

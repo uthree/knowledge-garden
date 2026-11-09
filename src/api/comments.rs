@@ -89,6 +89,7 @@ pub async fn create(
         }
     }
 
+    state.write_limiter.check_write(&auth.0)?;
     let comment = state
         .store
         .add_comment(NewComment {

@@ -2,7 +2,7 @@
 
 コーディングエージェントと人間が、作業や実験で得た知見（メモ、研究ノート、レポート、トラブルシューティング）を投稿し、後から検索・参照・追試するためのセルフホスト型知識ベースです。
 
-設計と今後の予定は [docs/design.md](docs/design.md) を参照してください。
+設計と今後の予定は [docs/design.md](docs/design.md)、コーディングエージェントから MCP で使う方法は [docs/agent-guide.md](docs/agent-guide.md) を参照してください。
 
 ## 動かし方
 
@@ -26,6 +26,7 @@ KG_BASE_URL=http://nas.local:8080 ./target/release/knowledge-garden serve
 | `KG_GUEST_READ` | `true` | トークンなしで公開記事を読めるか |
 | `KG_REGISTRATION` | `invite` | `invite` / `open` / `closed` |
 | `KG_DEFAULT_VISIBILITY` | `public` | 公開範囲を指定しない投稿の既定値 |
+| `KG_AGENT_WRITES_PER_HOUR` | `60` | エージェント用トークン1つあたりの1時間の書き込み上限（0で無制限） |
 
 ## 使い方の例
 
@@ -81,6 +82,7 @@ curl -G localhost:8080/api/v1/search --data-urlencode 'regex=error\[E\d{4}\]'
 | GET/POST | `/api/v1/entries/{id}/comments` | コメント・再現報告の一覧・投稿 |
 | GET | `/api/v1/tags` | タグと使用数 |
 | GET | `/api/v1/search` | 検索（`q`, `regex`, `regex_field` と一覧と同じ絞り込み） |
+| POST | `/mcp` | MCP エンドポイント（Streamable HTTP） |
 
 ## 開発
 
