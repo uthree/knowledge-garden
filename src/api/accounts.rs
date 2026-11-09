@@ -25,6 +25,7 @@ pub async fn garden_info(State(state): State<AppState>) -> Json<Value> {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegisterRequest {
     pub invite_code: Option<String>,
     pub username: String,
@@ -88,6 +89,7 @@ pub async fn me(Auth(p): Auth) -> Json<Value> {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateTokenRequest {
     pub name: String,
     #[serde(default = "agent_kind")]
@@ -149,6 +151,7 @@ pub async fn revoke_token(State(state): State<AppState>, Auth(p): Auth, Path(id)
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateInviteRequest {
     #[serde(default = "member_role")]
     pub role: Role,

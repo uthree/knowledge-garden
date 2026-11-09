@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use chrono::{DateTime, SecondsFormat, Utc};
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{QueryBuilder, Sqlite, SqlitePool};
 
 use super::*;
@@ -11,6 +11,9 @@ use crate::error::Error;
 pub struct SqliteStore {
     pool: SqlitePool,
 }
+
+/// `tokens.last_used_at` is refreshed at most this often.
+const LAST_USED_PRECISION_SECS: i64 = 60;
 
 fn now() -> String {
     ts(Utc::now())
@@ -44,6 +47,9 @@ impl SqliteStore {
             .create_if_missing(true)
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)
+            // Safe with WAL (a power loss can only drop the latest commits) and
+            // avoids an fsync on every commit.
+            .synchronous(SqliteSynchronous::Normal)
             .with_regexp();
         // An in-memory database exists per connection, so it must use exactly one.
         let max = if url.contains(":memory:") { 1 } else { 8 };
@@ -512,11 +518,18 @@ impl AccountStore for SqliteStore {
         else {
             return Ok(None);
         };
-        sqlx::query("UPDATE tokens SET last_used_at = ? WHERE id = ?")
-            .bind(now())
-            .bind(&token.id)
-            .execute(&self.pool)
-            .await?;
+        // Recording every use would make each authenticated read take the
+        // database write lock; a minute of precision is enough.
+        let stale = token
+            .last_used_at
+            .is_none_or(|t| Utc::now() - t > chrono::Duration::seconds(LAST_USED_PRECISION_SECS));
+        if stale {
+            sqlx::query("UPDATE tokens SET last_used_at = ? WHERE id = ?")
+                .bind(now())
+                .bind(&token.id)
+                .execute(&self.pool)
+                .await?;
+        }
         let user = sqlx::query_as::<_, UserRow>("SELECT * FROM users WHERE id = ?")
             .bind(&token.user_id)
             .fetch_one(&self.pool)
