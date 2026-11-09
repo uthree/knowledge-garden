@@ -5,6 +5,7 @@ pub mod api;
 pub mod auth;
 pub mod config;
 pub mod error;
+pub mod federation;
 pub mod mcp;
 pub mod model;
 pub mod policy;
@@ -22,6 +23,8 @@ pub struct AppState {
     pub store: Arc<dyn Store>,
     pub config: Arc<Config>,
     pub write_limiter: Arc<rate_limit::RateLimiter>,
+    /// How this Garden reaches other Gardens (replaced in tests).
+    pub peer_client: Arc<dyn federation::PeerClient>,
 }
 
 impl AppState {
@@ -34,6 +37,7 @@ impl AppState {
             store: Arc::new(store),
             config: Arc::new(config),
             write_limiter,
+            peer_client: Arc::new(federation::HttpPeerClient::new()),
         }
     }
 }

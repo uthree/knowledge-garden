@@ -47,6 +47,11 @@ pub(super) async fn readable_entry(state: &AppState, viewer: Option<&Principal>,
 async fn editable_entry(state: &AppState, auth: &Auth, id: &str) -> Result<EntryAccess> {
     auth.require(Scope::EntriesWrite)?;
     let entry = readable_entry(state, Some(&auth.0), id).await?;
+    if !entry.is_local {
+        return Err(Error::forbidden(
+            "this entry is mirrored from another Garden and can only be changed there",
+        ));
+    }
     if !can_edit(&auth.0, &entry) {
         return Err(Error::forbidden("only the author or an admin can change this entry"));
     }
@@ -213,6 +218,7 @@ pub async fn create(
         visibility: Visibility::Private,
         author_id: auth.0.user.id.clone(),
         current_version: 1,
+        is_local: true,
     };
     for link in links {
         store_link(&state, &source, &auth.0, link).await?;
@@ -253,6 +259,8 @@ pub struct ListQuery {
     pub any_tag: Option<String>,
     /// Only entries with a reproduction report with this result.
     pub has_reproduction: Option<ReproResult>,
+    /// `local`, `remote` (mirrored from other Gardens), or a Garden's base URL.
+    pub origin: Option<String>,
     /// RFC 3339 time or `YYYY-MM-DD` (UTC); entries created at or after it.
     pub since: Option<String>,
     /// RFC 3339 time or `YYYY-MM-DD` (UTC); entries created before it.
@@ -270,6 +278,7 @@ impl ListQuery {
             tags_all: split_tags(self.tag)?,
             tags_any: split_tags(self.any_tag)?,
             has_reproduction: self.has_reproduction,
+            origin: self.origin,
             since: self.since.as_deref().map(parse_time).transpose()?,
             until: self.until.as_deref().map(parse_time).transpose()?,
             limit: self.limit.unwrap_or(20).clamp(1, 100),

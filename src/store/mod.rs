@@ -97,6 +97,8 @@ pub struct EntryFilter {
     pub tags_any: Vec<String>,
     /// Only entries with at least one reproduction report with this result.
     pub has_reproduction: Option<ReproResult>,
+    /// `local`, `remote` (mirrored from other Gardens), or a Garden's base URL.
+    pub origin: Option<String>,
     /// Only entries created at or after this time.
     pub since: Option<DateTime<Utc>>,
     /// Only entries created before this time.
@@ -183,5 +185,92 @@ pub trait SearchStore: Send + Sync {
     async fn search(&self, query: &SearchQuery, vis: &VisibilityFilter) -> Result<Page<SearchRow>>;
 }
 
-pub trait Store: AccountStore + EntryStore + CommentStore + SearchStore {}
-impl<T: AccountStore + EntryStore + CommentStore + SearchStore> Store for T {}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerStatus {
+    /// We serve our feed to this Garden and mirror theirs.
+    Approved,
+    /// Neither; their mirrored entries are kept but no longer updated.
+    Blocked,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Peer {
+    pub id: String,
+    pub base_url: String,
+    pub name: String,
+    pub public_key: String,
+    pub status: PeerStatus,
+    #[serde(skip)]
+    pub cursor: Option<String>,
+    pub last_sync_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A local entry that changed, for the federation feed.
+pub struct FeedRow {
+    pub id: String,
+    pub uri: String,
+    /// The stored `updated_at` string, used verbatim in feed cursors.
+    pub updated_at: String,
+    pub visibility: Visibility,
+}
+
+pub struct RawLink {
+    pub relation: Relation,
+    pub target_uri: String,
+    pub target_version: Option<i64>,
+    pub note: Option<String>,
+}
+
+/// A verified entry from a peer's feed, ready to be stored as a mirror.
+pub struct MirrorEntry {
+    pub origin: String,
+    pub uri: String,
+    pub signature: String,
+    pub updated_at: DateTime<Utc>,
+    pub kind: EntryKind,
+    /// Already mapped to the local visibility (`public` or `members`).
+    pub visibility: Visibility,
+    pub status: Status,
+    pub version: i64,
+    pub created_at: DateTime<Utc>,
+    pub version_created_at: DateTime<Utc>,
+    /// Username qualified with the origin host, e.g. `alice@garden.example`.
+    pub author_username: String,
+    pub author_display_name: String,
+    pub posted_via: PostedVia,
+    pub tags: Vec<String>,
+    pub content: VersionContent,
+    pub links: Vec<RawLink>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MirrorOutcome {
+    Created,
+    Updated,
+}
+
+#[async_trait]
+pub trait FederationStore: Send + Sync {
+    /// Returns this Garden's 32-byte signing key seed, creating it on first use.
+    async fn garden_key_seed(&self) -> Result<[u8; 32]>;
+    async fn add_peer(&self, base_url: &str, name: &str, public_key: &str) -> Result<Peer>;
+    async fn list_peers(&self) -> Result<Vec<Peer>>;
+    async fn get_peer(&self, id: &str) -> Result<Option<Peer>>;
+    async fn find_peer(&self, base_url: &str) -> Result<Option<Peer>>;
+    async fn set_peer_status(&self, id: &str, status: PeerStatus) -> Result<bool>;
+    async fn record_sync(&self, id: &str, cursor: Option<&str>, error: Option<&str>) -> Result<()>;
+    /// Local entries that were ever shareable and changed after `after` (`(updated_at, id)`).
+    async fn feed_rows(&self, after: Option<(&str, &str)>, limit: i64) -> Result<Vec<FeedRow>>;
+    async fn raw_links(&self, entry_id: &str) -> Result<Vec<RawLink>>;
+    async fn apply_mirror(&self, entry: MirrorEntry) -> Result<MirrorOutcome>;
+    /// Hides a mirrored entry that its origin no longer shares. Returns false if unknown.
+    async fn withdraw_mirror(&self, origin: &str, uri: &str) -> Result<bool>;
+}
+
+pub trait Store: AccountStore + EntryStore + CommentStore + SearchStore + FederationStore {}
+impl<T: AccountStore + EntryStore + CommentStore + SearchStore + FederationStore> Store for T {}

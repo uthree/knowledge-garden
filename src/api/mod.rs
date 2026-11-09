@@ -1,6 +1,7 @@
 mod accounts;
 mod comments;
 mod entries;
+mod federation;
 pub(crate) mod index;
 mod search;
 
@@ -29,11 +30,16 @@ pub fn rest_router(state: AppState) -> Router {
         .route("/entries/{id}/links", get(entries::links).post(entries::add_link))
         .route("/entries/{id}/comments", get(comments::list).post(comments::create))
         .route("/tags", get(entries::tags))
-        .route("/search", get(search::search));
+        .route("/search", get(search::search))
+        .route("/peers", get(federation::list_peers).post(federation::add_peer))
+        .route("/peers/{id}", axum::routing::patch(federation::update_peer))
+        .route("/peers/{id}/sync", post(federation::sync_now));
 
     Router::new()
         .route("/", get(index::api_index))
         .route("/health", get(|| async { "ok" }))
+        .route(crate::federation::WELL_KNOWN_PATH, get(federation::well_known))
+        .route(crate::federation::FEED_PATH, get(federation::feed))
         // Entry URIs (`<base_url>/entries/<id>`) resolve to the entry itself.
         .route("/entries/{id}", get(entries::get))
         .nest("/api/v1", api)

@@ -25,6 +25,14 @@ impl Garden {
     }
 
     pub async fn with_config(config: Config) -> Self {
+        Self::with_peer_client(config, None).await
+    }
+
+    /// Builds a Garden whose outgoing requests to other Gardens go through `client`.
+    pub async fn with_peer_client(
+        config: Config,
+        client: Option<std::sync::Arc<dyn knowledge_garden::federation::PeerClient>>,
+    ) -> Self {
         let store = SqliteStore::connect("sqlite::memory:").await.unwrap();
         let user = store
             .create_user(NewUser {
@@ -47,8 +55,12 @@ impl Garden {
             })
             .await
             .unwrap();
+        let mut state = AppState::new(store, config);
+        if let Some(client) = client {
+            state.peer_client = client;
+        }
         Self {
-            app: router(AppState::new(store, config)),
+            app: router(state),
             admin: secret,
         }
     }

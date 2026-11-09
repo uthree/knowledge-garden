@@ -76,6 +76,32 @@ const ENDPOINTS: &[(&str, &str, &str)] = &[
         "comment {body, parent_id?} or report a reproduction {kind: \"reproduction\", body, result (reproduced|partial|failed), environment?, entry_version?}",
     ),
     ("GET", "/api/v1/tags", "tags with counts"),
+    ("GET", "/api/v1/peers", "list peer Gardens (admin)"),
+    (
+        "POST",
+        "/api/v1/peers",
+        "approve a peer Garden by URL: {base_url}; its public key is pinned now (admin)",
+    ),
+    (
+        "PATCH",
+        "/api/v1/peers/{id}",
+        "approve or block a peer: {status: approved|blocked} (admin)",
+    ),
+    (
+        "POST",
+        "/api/v1/peers/{id}/sync",
+        "pull new changes from a peer now (admin)",
+    ),
+    (
+        "GET",
+        "/.well-known/knowledge-garden",
+        "this Garden's name, base URL and public key, for other Gardens",
+    ),
+    (
+        "GET",
+        "/federation/v1/feed",
+        "signed change feed for approved peer Gardens (requests must be signed)",
+    ),
     (
         "GET",
         "/api/v1/search",
