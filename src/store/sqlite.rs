@@ -43,7 +43,8 @@ impl SqliteStore {
         let opts = SqliteConnectOptions::from_str(url)?
             .create_if_missing(true)
             .foreign_keys(true)
-            .journal_mode(SqliteJournalMode::Wal);
+            .journal_mode(SqliteJournalMode::Wal)
+            .with_regexp();
         // An in-memory database exists per connection, so it must use exactly one.
         let max = if url.contains(":memory:") { 1 } else { 8 };
         let pool = SqlitePoolOptions::new().max_connections(max).connect_with(opts).await?;
@@ -356,6 +357,37 @@ fn push_entry_filter(qb: &mut QueryBuilder<Sqlite>, f: &EntryFilter, vis: &Visib
         }
         sep.push_unseparated("))");
     }
+    if let Some(result) = f.has_reproduction {
+        qb.push(" AND EXISTS (SELECT 1 FROM comments c WHERE c.entry_id = e.id AND c.result = ")
+            .push_bind(result.as_str())
+            .push(")");
+    }
+    if let Some(since) = f.since {
+        qb.push(" AND e.created_at >= ").push_bind(ts(since));
+    }
+    if let Some(until) = f.until {
+        qb.push(" AND e.created_at < ").push_bind(ts(until));
+    }
+}
+
+/// Rebuilds the full-text row of an entry from its current version and tags.
+async fn reindex(conn: &mut sqlx::SqliteConnection, entry_id: &str) -> Result<()> {
+    sqlx::query("DELETE FROM entry_fts WHERE rowid = (SELECT seq FROM entries WHERE id = ?)")
+        .bind(entry_id)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query(
+        "INSERT INTO entry_fts (rowid, title, summary, body, tags)
+         SELECT e.seq, v.title, coalesce(v.summary, ''), v.body,
+                coalesce((SELECT group_concat(tag, ' ') FROM (SELECT tag FROM entry_tags WHERE entry_id = e.id ORDER BY tag)), '')
+         FROM entries e
+         JOIN entry_versions v ON v.entry_id = e.id AND v.version = e.current_version
+         WHERE e.id = ?",
+    )
+    .bind(entry_id)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
 }
 
 async fn insert_tags(conn: &mut sqlx::SqliteConnection, entry_id: &str, tags: &[String]) -> Result<()> {
@@ -586,6 +618,7 @@ impl EntryStore for SqliteStore {
         .await?;
         insert_version(&mut tx, &entry.id, 1, &entry.token_id, &entry.content, &at).await?;
         insert_tags(&mut tx, &entry.id, &entry.tags).await?;
+        reindex(&mut tx, &entry.id).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -698,6 +731,7 @@ impl EntryStore for SqliteStore {
         .await?
         .ok_or(Error::NotFound)?;
         insert_version(&mut tx, id, version, token_id, &content, &at).await?;
+        reindex(&mut tx, id).await?;
         tx.commit().await?;
         Ok(version)
     }
@@ -722,6 +756,7 @@ impl EntryStore for SqliteStore {
                 .execute(&mut *tx)
                 .await?;
             insert_tags(&mut tx, id, &tags).await?;
+            reindex(&mut tx, id).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -902,5 +937,118 @@ impl CommentStore for SqliteStore {
         .into_iter()
         .map(CommentRow::into_comment)
         .collect()
+    }
+}
+
+// ---------------------------------------------------------------- search
+
+#[derive(sqlx::FromRow)]
+struct SearchDbRow {
+    #[sqlx(flatten)]
+    base: EntryRow,
+    search_body: String,
+    score: Option<f64>,
+}
+
+fn push_search_where(qb: &mut QueryBuilder<Sqlite>, q: &SearchQuery, vis: &VisibilityFilter) {
+    use crate::search::{fts_match_expr, like_pattern};
+
+    push_entry_filter(qb, &q.filter, vis);
+    if !q.indexed_terms.is_empty() {
+        qb.push(" AND entry_fts MATCH ")
+            .push_bind(fts_match_expr(&q.indexed_terms));
+    }
+    let any_field_like = |qb: &mut QueryBuilder<Sqlite>, term: &str| {
+        let pattern = like_pattern(term);
+        qb.push("(");
+        for (i, col) in ["f.title", "f.summary", "f.body", "f.tags"].iter().enumerate() {
+            if i > 0 {
+                qb.push(" OR ");
+            }
+            qb.push(format!("{col} LIKE "))
+                .push_bind(pattern.clone())
+                .push(" ESCAPE '\\'");
+        }
+        qb.push(")");
+    };
+    for term in &q.short_terms {
+        qb.push(" AND ");
+        any_field_like(qb, term);
+    }
+    for term in &q.exclude {
+        qb.push(" AND NOT ");
+        any_field_like(qb, term);
+    }
+    if let Some(re) = &q.regex {
+        let cols: &[&str] = match q.regex_field {
+            RegexField::Title => &["f.title"],
+            RegexField::Body => &["f.body"],
+            RegexField::All => &["f.title", "f.summary", "f.body"],
+        };
+        qb.push(" AND (");
+        for (i, col) in cols.iter().enumerate() {
+            if i > 0 {
+                qb.push(" OR ");
+            }
+            qb.push(format!("{col} REGEXP ")).push_bind(re.clone());
+        }
+        qb.push(")");
+    }
+}
+
+#[async_trait]
+impl SearchStore for SqliteStore {
+    async fn search(&self, q: &SearchQuery, vis: &VisibilityFilter) -> Result<Page<SearchRow>> {
+        let joins = ENTRY_JOINS.replacen(
+            "FROM entries e",
+            "FROM entries e JOIN entry_fts f ON f.rowid = e.seq",
+            1,
+        );
+        let ranked = !q.indexed_terms.is_empty();
+
+        let mut count = QueryBuilder::<Sqlite>::new("SELECT count(*) ");
+        count.push(&joins);
+        push_search_where(&mut count, q, vis);
+        let total: i64 = count.build_query_scalar().fetch_one(&self.pool).await?;
+
+        let mut qb = QueryBuilder::<Sqlite>::new("SELECT ");
+        qb.push(ENTRY_COLUMNS).push(", f.body AS search_body, ");
+        // bm25 weights follow the column order: title, summary, body, tags. Lower is better.
+        qb.push(if ranked {
+            "-bm25(entry_fts, 10.0, 5.0, 1.0, 3.0) AS score "
+        } else {
+            "NULL AS score "
+        });
+        qb.push(&joins);
+        push_search_where(&mut qb, q, vis);
+        qb.push(if ranked {
+            " ORDER BY score DESC, e.updated_at DESC"
+        } else {
+            " ORDER BY e.updated_at DESC, e.id DESC"
+        });
+        qb.push(" LIMIT ")
+            .push_bind(q.filter.limit)
+            .push(" OFFSET ")
+            .push_bind(q.filter.offset);
+
+        let items = qb
+            .build_query_as::<SearchDbRow>()
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(|r| {
+                Ok(SearchRow {
+                    entry: r.base.into_summary()?,
+                    score: r.score,
+                    body: r.search_body,
+                })
+            })
+            .collect::<Result<_>>()?;
+        Ok(Page {
+            items,
+            total,
+            limit: q.filter.limit,
+            offset: q.filter.offset,
+        })
     }
 }

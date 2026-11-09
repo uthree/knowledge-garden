@@ -7,6 +7,7 @@ pub mod config;
 pub mod error;
 pub mod model;
 pub mod policy;
+pub mod search;
 pub mod store;
 
 use std::sync::Arc;

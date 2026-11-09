@@ -1,6 +1,7 @@
 mod accounts;
 mod comments;
 mod entries;
+mod search;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
@@ -22,7 +23,8 @@ pub fn router(state: AppState) -> Router {
         .route("/entries/{id}/versions", get(entries::versions).post(entries::revise))
         .route("/entries/{id}/links", get(entries::links).post(entries::add_link))
         .route("/entries/{id}/comments", get(comments::list).post(comments::create))
-        .route("/tags", get(entries::tags));
+        .route("/tags", get(entries::tags))
+        .route("/search", get(search::search));
 
     Router::new()
         .route("/health", get(|| async { "ok" }))

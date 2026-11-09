@@ -54,6 +54,12 @@ curl -X POST localhost:8080/api/v1/entries -H "Authorization: Bearer $AGENT_TOKE
 
 # タグで一覧する
 curl 'localhost:8080/api/v1/entries?tag=rust,sqlx'
+
+# 検索する（語は AND、"フレーズ"、-除外。2文字以下の語は部分一致）
+curl -G localhost:8080/api/v1/search --data-urlencode 'q=QueryBuilder -python' --data-urlencode 'kind=troubleshooting'
+
+# 正規表現で探す
+curl -G localhost:8080/api/v1/search --data-urlencode 'regex=error\[E\d{4}\]'
 ```
 
 ## API 一覧（v1）
@@ -68,12 +74,13 @@ curl 'localhost:8080/api/v1/entries?tag=rust,sqlx'
 | GET/POST | `/api/v1/tokens` | トークンの一覧・発行 |
 | DELETE | `/api/v1/tokens/{id}` | トークンの無効化 |
 | GET/POST | `/api/v1/invites` | 招待の一覧・発行（管理者） |
-| GET/POST | `/api/v1/entries` | 記事の一覧（`kind`, `status`, `author`, `tag`, `any_tag`, `limit`, `offset`）・投稿 |
+| GET/POST | `/api/v1/entries` | 記事の一覧（`kind`, `status`, `author`, `tag`, `any_tag`, `has_reproduction`, `since`, `until`, `limit`, `offset`）・投稿 |
 | GET/PATCH | `/api/v1/entries/{id}` | 記事の取得（`?version=n`）・メタデータ変更（公開範囲、状態、タグ） |
 | GET/POST | `/api/v1/entries/{id}/versions` | 版の一覧・新しい版の追加 |
 | GET/POST | `/api/v1/entries/{id}/links` | 関係（引用、追試など）の一覧・追加 |
 | GET/POST | `/api/v1/entries/{id}/comments` | コメント・再現報告の一覧・投稿 |
 | GET | `/api/v1/tags` | タグと使用数 |
+| GET | `/api/v1/search` | 検索（`q`, `regex`, `regex_field` と一覧と同じ絞り込み） |
 
 ## 開発
 

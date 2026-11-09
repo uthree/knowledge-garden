@@ -39,7 +39,8 @@ CREATE TABLE tokens (
 
 -- An entry is the stable identity of a post. Its content lives in entry_versions.
 CREATE TABLE entries (
-    id              TEXT PRIMARY KEY,
+    seq             INTEGER PRIMARY KEY,     -- stable integer key (used as the full-text index rowid)
+    id              TEXT NOT NULL UNIQUE,
     uri             TEXT NOT NULL UNIQUE,    -- global identifier, e.g. https://garden.example/entries/<id>
     origin          TEXT NOT NULL,           -- base URL of the Garden that owns the entry
     is_local        INTEGER NOT NULL CHECK (is_local IN (0, 1)),

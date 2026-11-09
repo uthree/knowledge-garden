@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -245,8 +246,40 @@ pub struct ListQuery {
     pub tag: Option<String>,
     /// Comma-separated; entries must have at least one of these tags.
     pub any_tag: Option<String>,
+    /// Only entries with a reproduction report with this result.
+    pub has_reproduction: Option<ReproResult>,
+    /// RFC 3339 time or `YYYY-MM-DD` (UTC); entries created at or after it.
+    pub since: Option<String>,
+    /// RFC 3339 time or `YYYY-MM-DD` (UTC); entries created before it.
+    pub until: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+}
+
+impl ListQuery {
+    pub(super) fn into_filter(self) -> Result<EntryFilter> {
+        Ok(EntryFilter {
+            kind: self.kind,
+            status: self.status,
+            author: self.author,
+            tags_all: split_tags(self.tag)?,
+            tags_any: split_tags(self.any_tag)?,
+            has_reproduction: self.has_reproduction,
+            since: self.since.as_deref().map(parse_time).transpose()?,
+            until: self.until.as_deref().map(parse_time).transpose()?,
+            limit: self.limit.unwrap_or(20).clamp(1, 100),
+            offset: self.offset.unwrap_or(0).max(0),
+        })
+    }
+}
+
+fn parse_time(s: &str) -> Result<DateTime<Utc>> {
+    if let Ok(t) = DateTime::parse_from_rfc3339(s) {
+        return Ok(t.with_timezone(&Utc));
+    }
+    NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .map(|d| d.and_time(NaiveTime::MIN).and_utc())
+        .map_err(|_| Error::bad_request(format!("invalid time '{s}': use RFC 3339 or YYYY-MM-DD")))
 }
 
 fn split_tags(s: Option<String>) -> Result<Vec<String>> {
@@ -259,15 +292,7 @@ pub async fn list(
     Viewer(viewer): Viewer,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Page<EntrySummary>>> {
-    let filter = EntryFilter {
-        kind: q.kind,
-        status: q.status,
-        author: q.author,
-        tags_all: split_tags(q.tag)?,
-        tags_any: split_tags(q.any_tag)?,
-        limit: q.limit.unwrap_or(20).clamp(1, 100),
-        offset: q.offset.unwrap_or(0).max(0),
-    };
+    let filter = q.into_filter()?;
     let vis = VisibilityFilter::for_viewer(&state.config, viewer.as_ref());
     Ok(Json(state.store.list_entries(&filter, &vis).await?))
 }

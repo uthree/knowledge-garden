@@ -95,8 +95,46 @@ pub struct EntryFilter {
     pub tags_all: Vec<String>,
     /// At least one of these tags must be present (ignored when empty).
     pub tags_any: Vec<String>,
+    /// Only entries with at least one reproduction report with this result.
+    pub has_reproduction: Option<ReproResult>,
+    /// Only entries created at or after this time.
+    pub since: Option<DateTime<Utc>>,
+    /// Only entries created before this time.
+    pub until: Option<DateTime<Utc>>,
     pub limit: i64,
     pub offset: i64,
+}
+
+/// Which fields a regular expression is matched against.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegexField {
+    Title,
+    Body,
+    /// Title, summary and body.
+    #[default]
+    All,
+}
+
+/// A validated search. All conditions are ANDed.
+#[derive(Default)]
+pub struct SearchQuery {
+    /// Terms matched through the trigram index (at least 3 characters each).
+    pub indexed_terms: Vec<String>,
+    /// Terms matched by substring (shorter than 3 characters).
+    pub short_terms: Vec<String>,
+    /// Entries containing any of these are excluded.
+    pub exclude: Vec<String>,
+    pub regex: Option<String>,
+    pub regex_field: RegexField,
+    pub filter: EntryFilter,
+}
+
+pub struct SearchRow {
+    pub entry: EntrySummary,
+    /// Relevance (higher is better); present when indexed terms were used.
+    pub score: Option<f64>,
+    pub body: String,
 }
 
 #[async_trait]
@@ -139,5 +177,11 @@ pub trait CommentStore: Send + Sync {
     async fn list_comments(&self, entry_id: &str) -> Result<Vec<Comment>>;
 }
 
-pub trait Store: AccountStore + EntryStore + CommentStore {}
-impl<T: AccountStore + EntryStore + CommentStore> Store for T {}
+#[async_trait]
+pub trait SearchStore: Send + Sync {
+    /// Searches the current version of entries visible under `vis`.
+    async fn search(&self, query: &SearchQuery, vis: &VisibilityFilter) -> Result<Page<SearchRow>>;
+}
+
+pub trait Store: AccountStore + EntryStore + CommentStore + SearchStore {}
+impl<T: AccountStore + EntryStore + CommentStore + SearchStore> Store for T {}
