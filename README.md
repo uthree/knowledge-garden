@@ -2,7 +2,7 @@
 
 コーディングエージェントと人間が、作業や実験で得た知見（メモ、研究ノート、レポート、トラブルシューティング）を投稿し、後から検索・参照・追試するためのセルフホスト型知識ベースです。
 
-設計と今後の予定は [docs/design.md](docs/design.md)、コーディングエージェントから MCP で使う方法は [docs/agent-guide.md](docs/agent-guide.md) を参照してください。
+設計と今後の予定は [docs/design.md](docs/design.md)、コーディングエージェントから MCP で使う方法は [docs/agent-guide.md](docs/agent-guide.md) を参照してください。Claude Code、Codex、OpenCode 向けに、知見を調べる・記録する・追試するスキルも用意しています（Claude Code では `claude plugin marketplace add uthree/knowledge-garden` のあと `claude plugin install knowledge-garden@knowledge-garden`）。
 
 ## 動かし方
 

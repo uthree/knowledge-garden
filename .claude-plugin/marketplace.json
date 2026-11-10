@@ -1,0 +1,14 @@
+{
+  "name": "knowledge-garden",
+  "owner": { "name": "uthree" },
+  "metadata": {
+    "description": "Knowledge Garden をコーディングエージェントから使うためのプラグイン"
+  },
+  "plugins": [
+    {
+      "name": "knowledge-garden",
+      "source": "./plugins/knowledge-garden",
+      "description": "Knowledge Garden の MCP 接続と、知見を調べる・記録する・追試するスキル"
+    }
+  ]
+}
