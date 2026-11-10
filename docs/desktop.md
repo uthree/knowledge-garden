@@ -70,12 +70,12 @@ Auris Studio の更新（リリース確認 → 裏でダウンロード → サ
 | 項目 | 決定 |
 | --- | --- |
 | リリース | このリポジトリの GitHub Releases。タグは `desktop-vX.Y.Z`（サーバーとは別に版を振る）。`.github/workflows/desktop-release.yml` がタグで macOS（aarch64）、Windows（x86_64）、Linux（x86_64）を作る |
-| 成果物 | `knowledge-garden-desktop-vX.Y.Z-macos-aarch64.tar.gz`（`Knowledge Garden.app`）、`-windows-x86_64.zip`、`-linux-x86_64.tar.gz` |
+| 成果物 | インストール用に `knowledge-garden-desktop-vX.Y.Z-macos-aarch64.dmg`（`Knowledge Garden.app` と「アプリケーション」へのリンク）と `-windows-x86_64-setup.exe`（Inno Setup、ユーザーごと、`%LOCALAPPDATA%\Programs\Knowledge Garden`、スタートメニュー）。更新用と持ち運び用に `-macos-aarch64.tar.gz`、`-windows-x86_64.zip`、`-linux-x86_64.tar.gz`。インストーラーで入れた先もユーザーが書き込める場所なので、更新はどちらで入れてもアーカイブからの差し替えで行う（Auris Studio のようにインストーラーを流し直すことはしない。そのため Windows の「アプリと機能」に出る版は最初に入れたときのまま） |
 | 確認 | 起動の少し後と、開いている間は6時間ごとに `GET /repos/uthree/knowledge-garden/releases` を見て、`desktop-v` で始まる最新の安定版を探し、見つけたら取得まで進める。設定の「アップデート」の「今すぐ確認」ですぐ確認する。設定でオフにでき、切り替えは次の起動から |
 | 検証 | アセットの名前、URL（`https://github.com/uthree/knowledge-garden/releases/download/<tag>/<name>`）、サイズの上限、GitHub が付ける `digest`（`sha256:...`）を確認し、ダウンロード後にサイズと SHA-256 が一致したものだけを使う。digest のないリリースはリリースページへの案内だけにする |
 | 適用 | ダウンロードと展開が済んだら、動いている実行ファイル（バンドル）を `.old` に改名して新しいものを置く。Unix と Windows のどちらでも、実行中のファイルの改名はできる。差し替えたら「再起動して更新」を案内し、押されたらローカルサーバーを止めて（新しい版がポートを使えるように）から新しい実行ファイル（macOS では `open -n` でバンドル）を起動して終了する。押さなくても次の起動から新しい版になる。古いファイルと作業用の `.knowledge-garden-update/` は次の起動時に消す。展開は OS の `tar`（Windows 10 以降の bsdtar は zip も読む） |
 | 案内 | 設定画面の「アップデート」に今の版と状態（確認中・最新・ダウンロード中の進み具合・準備完了・失敗）を出す。準備ができたらステータスバーにも「再起動して更新」を出す |
-| ビルド | macOS は `Knowledge Garden.app`（`Info.plist`、`assets/app-icons/knowledge-garden/icon.icns`、アドホック署名）を tar.gz に、Windows と Linux は実行ファイルを入れたフォルダを zip / tar.gz にする。タグと `desktop/Cargo.toml` の版が違えば失敗させる。リリースを出す手順は、版を上げてマージし `git tag desktop-vX.Y.Z && git push origin desktop-vX.Y.Z` |
+| ビルド | macOS は `Knowledge Garden.app`（`Info.plist`、`assets/app-icons/knowledge-garden/icon.icns`、アドホック署名）を tar.gz と dmg に、Windows と Linux は実行ファイルを入れたフォルダを zip / tar.gz にし、Windows はさらに `desktop/installer/knowledge-garden.iss` でインストーラーを作る。dmg は中身を、インストーラーは無言でのインストールとアンインストールを CI で確かめる。手動で実行すると公開せずにビルドだけする。タグと `desktop/Cargo.toml` の版が違えば失敗させる。リリースを出す手順は、版を上げてマージし `git tag desktop-vX.Y.Z && git push origin desktop-vX.Y.Z` |
 | 対象外 | `cargo run` や `cargo install` で入れたもの（実行ファイルが Cargo の target / bin の下にある）と、置き場所に書き込めないもの。これらはリリースページを開くボタンだけを出す |
 
 ## エージェントパネル

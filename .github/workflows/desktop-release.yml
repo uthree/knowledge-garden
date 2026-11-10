@@ -1,11 +1,23 @@
-# Builds the desktop app for a `desktop-vX.Y.Z` tag and publishes a release with one archive per
-# platform. The app's updater (desktop/src/update.rs) looks for these exact names and checks
-# each download against the SHA-256 digest GitHub records for the asset.
+# Builds the desktop app for a `desktop-vX.Y.Z` tag and publishes a release with, per platform:
+#
+#   macOS (Apple silicon)  …-macos-aarch64.dmg          disk image: drag the app to Applications
+#                          …-macos-aarch64.tar.gz       the same app, for the updater
+#   Windows (x86_64)       …-windows-x86_64-setup.exe   per-user installer (Inno Setup)
+#                          …-windows-x86_64.zip         portable, and for the updater
+#   Linux (x86_64)         …-linux-x86_64.tar.gz
+#
+# The app's updater (desktop/src/update.rs) downloads the archives (.tar.gz / .zip) by these
+# exact names, checks each against the SHA-256 digest GitHub records for the asset, and swaps the
+# installed app in place, so a copy installed from the disk image or the installer updates too.
+#
+# Run it by hand (Actions → Desktop release → Run workflow) to build everything from a branch
+# without publishing, e.g. to try an installer before tagging.
 name: Desktop release
 
 on:
   push:
     tags: ["desktop-v*"]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,7 +32,7 @@ jobs:
       - id: check
         run: |
           version=$(grep -m1 '^version' desktop/Cargo.toml | cut -d'"' -f2)
-          if [ "desktop-v$version" != "$GITHUB_REF_NAME" ]; then
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "desktop-v$version" != "$GITHUB_REF_NAME" ]; then
             echo "::error::tag $GITHUB_REF_NAME does not match desktop/Cargo.toml version $version"
             exit 1
           fi
@@ -28,21 +40,21 @@ jobs:
 
   build:
     needs: version
-    name: Build (${{ matrix.suffix }})
+    name: Build (${{ matrix.platform }})
     strategy:
       fail-fast: true
       matrix:
         include:
           - os: macos-latest
-            suffix: macos-aarch64.tar.gz
+            platform: macos-aarch64
           - os: windows-latest
-            suffix: windows-x86_64.zip
+            platform: windows-x86_64
           - os: ubuntu-latest
-            suffix: linux-x86_64.tar.gz
+            platform: linux-x86_64
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      ARCHIVE: knowledge-garden-desktop-v${{ needs.version.outputs.version }}-${{ matrix.suffix }}
+      STAGE: knowledge-garden-desktop-v${{ needs.version.outputs.version }}-${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
       - if: runner.os == 'Linux'
@@ -79,36 +91,98 @@ jobs:
           EOF
           # Ad-hoc signature: Apple silicon runs only signed code.
           codesign --force --deep --sign - "$app"
-          tar -czf "$ARCHIVE" -C dist "Knowledge Garden.app"
+          tar -czf "$STAGE.tar.gz" -C dist "Knowledge Garden.app"
+
+          # The disk image: the app beside a link to Applications, to drag it across.
+          dmg="dmg-stage"
+          mkdir -p "$dmg"
+          cp -R "$app" "$dmg/"
+          ln -s /Applications "$dmg/Applications"
+          hdiutil create -volname "Knowledge Garden" -srcfolder "$dmg" -format UDZO -ov "$STAGE.dmg"
+
+      - name: Verify the disk image
+        if: runner.os == 'macOS'
+        run: |
+          mount="$RUNNER_TEMP/kg-dmg"
+          mkdir -p "$mount"
+          hdiutil attach "$STAGE.dmg" -readonly -nobrowse -mountpoint "$mount"
+          trap 'hdiutil detach "$mount"' EXIT
+          diff -qr "dist/Knowledge Garden.app" "$mount/Knowledge Garden.app"
+          test "$(readlink "$mount/Applications")" = /Applications
+          codesign --verify --deep "$mount/Knowledge Garden.app"
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
-          dir="dist/knowledge-garden-desktop-v$VERSION-linux-x86_64"
+          dir="dist/$STAGE"
           mkdir -p "$dir"
           cp target/release/knowledge-garden-desktop "$dir/"
           cp assets/app-icons/knowledge-garden/png/256.png "$dir/knowledge-garden.png"
-          cp LICENSE* README.md "$dir/" 2>/dev/null || true
-          tar -czf "$ARCHIVE" -C dist "$(basename "$dir")"
+          cp LICENSE README.md "$dir/"
+          tar -czf "$STAGE.tar.gz" -C dist "$STAGE"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $dir = "dist/knowledge-garden-desktop-v$env:VERSION-windows-x86_64"
+          $dir = "dist/$env:STAGE"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           Copy-Item target/release/knowledge-garden-desktop.exe $dir
-          Copy-Item README.md $dir
-          Compress-Archive -Path $dir -DestinationPath $env:ARCHIVE
+          Copy-Item assets/app-icons/knowledge-garden/icon.ico (Join-Path $dir 'knowledge-garden.ico')
+          Copy-Item LICENSE, README.md $dir
+          Compress-Archive -Path $dir -DestinationPath "$env:STAGE.zip"
+
+      - name: Build the installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1
+          if (-not $compiler) { $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe' }
+          if (-not (Test-Path -LiteralPath $compiler)) {
+            choco install innosetup --no-progress -y
+            $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          }
+          $stage = (Resolve-Path "dist/$env:STAGE").Path
+          $icon = (Resolve-Path 'assets/app-icons/knowledge-garden/icon.ico').Path
+          $script = (Resolve-Path 'desktop/installer/knowledge-garden.iss').Path
+          $output = (Get-Location).Path
+          & $compiler "/DStageDir=$stage" "/DOutputDir=$output" "/DAppVersion=$env:VERSION" "/DIconPath=$icon" $script
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE." }
+          if (-not (Test-Path -LiteralPath "$env:STAGE-setup.exe")) { throw "The installer was not created." }
+
+      - name: Try the installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = (Resolve-Path "$env:STAGE-setup.exe").Path
+          if ((Get-Item -LiteralPath $installer).VersionInfo.ProductVersion.Trim() -ne $env:VERSION) {
+            throw 'The installer version does not match the release.'
+          }
+          $dir = Join-Path $env:RUNNER_TEMP 'Knowledge Garden'
+          $setup = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$dir`"") -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "The installer exited with code $($setup.ExitCode)." }
+          foreach ($file in 'knowledge-garden-desktop.exe', 'knowledge-garden.ico', 'LICENSE', 'README.md', 'unins000.exe') {
+            if (-not (Test-Path -LiteralPath (Join-Path $dir $file))) { throw "Not installed: $file" }
+          }
+          $start = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Knowledge Garden.lnk'
+          if (-not (Test-Path -LiteralPath $start)) { throw 'No Start menu shortcut.' }
+          $uninstall = Start-Process -FilePath (Join-Path $dir 'unins000.exe') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "The uninstaller exited with code $($uninstall.ExitCode)." }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ARCHIVE }}
-          path: ${{ env.ARCHIVE }}
+          name: ${{ matrix.platform }}
+          path: |
+            ${{ env.STAGE }}.tar.gz
+            ${{ env.STAGE }}.zip
+            ${{ env.STAGE }}.dmg
+            ${{ env.STAGE }}-setup.exe
           if-no-files-found: error
 
   publish:
     needs: [version, build]
+    # A run started by hand stops after the builds; their files are on the run's page.
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -122,7 +196,21 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           ls -l dist
+          cat > notes.md <<EOF
+          Knowledge Garden デスクトップ版 $VERSION
+
+          | ファイル | 中身 |
+          | --- | --- |
+          | \`…-macos-aarch64.dmg\` | macOS（Apple シリコン）。開いて \`Knowledge Garden.app\` を「アプリケーション」へドラッグ |
+          | \`…-windows-x86_64-setup.exe\` | Windows のインストーラー（ユーザーごと、管理者権限不要） |
+          | \`…-linux-x86_64.tar.gz\` | Linux。展開して \`knowledge-garden-desktop\` を実行 |
+          | \`…-macos-aarch64.tar.gz\`、\`…-windows-x86_64.zip\` | 展開するだけで使える版（アプリの自動更新もこれを使う） |
+
+          入れた版は、起動中に新しいリリースを見つけると裏で取得して「再起動して更新」を案内します。
+
+          署名していないので、macOS では初回だけ Finder で右クリックして「開く」を選ぶか、\`xattr -dr com.apple.quarantine "/Applications/Knowledge Garden.app"\` を実行してください。Windows で SmartScreen が出たら「詳細情報」→「実行」を選んでください。
+          EOF
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "Knowledge Garden デスクトップ版 $VERSION" \
-            --notes "デスクトップ版 $VERSION。macOS（Apple シリコン）、Windows（x86_64）、Linux（x86_64）。入っている版は起動中に自動でこのリリースを見つけて更新します。"
+            --notes-file notes.md
