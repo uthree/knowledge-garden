@@ -3,10 +3,14 @@
 FROM rust:1.97-slim-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
+# The desktop app shares the workspace: only its manifest is needed (and a stub to load it), and
+# only the server is built.
+COPY desktop/Cargo.toml desktop/Cargo.toml
+RUN mkdir -p desktop/src && echo 'fn main() {}' > desktop/src/main.rs
 COPY src src
 COPY migrations migrations
 COPY assets assets
-RUN cargo build --release --locked
+RUN cargo build --release --locked -p knowledge-garden
 
 FROM debian:bookworm-slim
 RUN apt-get update \

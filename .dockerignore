@@ -4,4 +4,4 @@ target
 *.db-wal
 data
 .git
-desktop
+desktop/src

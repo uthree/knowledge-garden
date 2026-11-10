@@ -67,4 +67,21 @@ pub fn router(state: AppState) -> Router {
     rest.clone()
         .merge(crate::mcp::router(state.clone(), rest))
         .merge(crate::web::router(state))
+        .layer(axum::middleware::from_fn(log_request))
+}
+
+/// One debug line per request (method, path, status, time) under the target
+/// `knowledge_garden::http`; hidden at the default `info` level.
+async fn log_request(request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let started = std::time::Instant::now();
+    let response = next.run(request).await;
+    tracing::debug!(
+        target: "knowledge_garden::http",
+        "{method} {path} {} {}ms",
+        response.status().as_u16(),
+        started.elapsed().as_millis()
+    );
+    response
 }

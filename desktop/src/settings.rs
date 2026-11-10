@@ -20,6 +20,89 @@ pub fn config_dir() -> PathBuf {
         .join("knowledge-garden-desktop")
 }
 
+/// The folder for the local Garden's database and backups.
+pub fn default_data_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("KG_DESKTOP_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("knowledge-garden-desktop")
+}
+
+/// The id of the connection to the Garden this app runs.
+pub const LOCAL_CONNECTION_ID: &str = "local";
+
+/// How to run the Garden on this computer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalServerSettings {
+    pub port: u16,
+    /// Listen on every network interface, so other devices on the LAN can connect.
+    pub lan: bool,
+    /// The public base URL entry URIs are built from; `http://localhost:<port>` when unset.
+    pub base_url: Option<String>,
+    /// Start the server when the app starts (once it has been set up).
+    pub autostart: bool,
+    /// Where the database lives; [`default_data_dir`] when unset.
+    pub data_dir: Option<PathBuf>,
+    pub name: String,
+    /// Seconds between pulls from approved peer Gardens; 0 pulls only on demand.
+    pub sync_interval_secs: u64,
+}
+
+impl Default for LocalServerSettings {
+    fn default() -> Self {
+        Self {
+            port: 8787,
+            lan: false,
+            base_url: None,
+            autostart: true,
+            data_dir: None,
+            name: "手元の Garden".into(),
+            sync_interval_secs: 300,
+        }
+    }
+}
+
+impl LocalServerSettings {
+    pub fn data_dir(&self) -> PathBuf {
+        self.data_dir.clone().unwrap_or_else(default_data_dir)
+    }
+
+    pub fn database_path(&self) -> PathBuf {
+        self.data_dir().join("garden.db")
+    }
+
+    /// Where the Garden keeps attached files.
+    pub fn files_dir(&self) -> PathBuf {
+        self.data_dir().join("files")
+    }
+
+    /// The Garden's public base URL.
+    pub fn base_url(&self) -> String {
+        match self.base_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+            Some(url) => url.trim_end_matches('/').to_string(),
+            None => format!("http://localhost:{}", self.port),
+        }
+    }
+
+    /// Where this app reaches the server: always the loopback address, which works whether or
+    /// not the server also listens on the LAN.
+    pub fn client_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    pub fn bind_addr(&self) -> std::net::SocketAddr {
+        let ip = if self.lan {
+            std::net::Ipv4Addr::UNSPECIFIED
+        } else {
+            std::net::Ipv4Addr::LOCALHOST
+        };
+        (ip, self.port).into()
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionKind {
@@ -63,6 +146,7 @@ pub struct Settings {
     pub appearance: AppearanceChoice,
     /// Atelier's direction: `glass` (the adopted one), `studio` or `mono`.
     pub direction: String,
+    pub local: LocalServerSettings,
 }
 
 impl Default for Settings {
@@ -72,6 +156,7 @@ impl Default for Settings {
             current: None,
             appearance: AppearanceChoice::System,
             direction: "glass".into(),
+            local: LocalServerSettings::default(),
         }
     }
 }
@@ -100,6 +185,11 @@ impl Settings {
                 self.current = Some(id);
             }
         }
+    }
+
+    /// The connection to the Garden this app runs, once it has been set up.
+    pub fn local_connection(&self) -> Option<&Connection> {
+        self.connections.iter().find(|c| c.kind == ConnectionKind::Local)
     }
 
     pub fn remove(&mut self, id: &str) {
@@ -287,5 +377,23 @@ mod tests {
         );
         settings.remove("a");
         assert_eq!(settings.current().unwrap().id, "b");
+    }
+
+    #[test]
+    fn the_local_server_defaults_to_this_computer_only() {
+        let local = LocalServerSettings::default();
+        assert_eq!(local.bind_addr().to_string(), "127.0.0.1:8787");
+        assert_eq!(local.base_url(), "http://localhost:8787");
+        assert_eq!(local.client_url(), "http://127.0.0.1:8787");
+        let lan = LocalServerSettings {
+            lan: true,
+            base_url: Some(" http://studio.local:8787/ ".into()),
+            ..local
+        };
+        assert_eq!(lan.bind_addr().to_string(), "0.0.0.0:8787");
+        assert_eq!(lan.base_url(), "http://studio.local:8787");
+        // Settings saved before the local server existed still load.
+        let old: Settings = serde_json::from_str(r#"{"connections":[],"direction":"glass"}"#).unwrap();
+        assert_eq!(old.local, LocalServerSettings::default());
     }
 }

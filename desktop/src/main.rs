@@ -6,6 +6,8 @@
 mod api;
 mod app;
 mod assets;
+mod local_server;
+mod logs;
 mod pages;
 mod runtime;
 mod settings;
@@ -40,6 +42,7 @@ pub fn is_dark(appearance: gpui::WindowAppearance) -> bool {
 }
 
 fn main() {
+    logs::init();
     let store = SettingsStore::default_location();
     let settings = store.load();
     Application::new()

@@ -10,7 +10,7 @@ Knowledge Garden のデスクトップ版。[gpui](https://crates.io/crates/gpui
 
 | 項目 | 決定 |
 | --- | --- |
-| 置き場所 | `desktop/`。独立した Cargo workspace で、`Cargo.lock` も別。サーバーのロックファイルと Docker イメージに gpui を持ち込まない |
+| 置き場所 | `desktop/`（パッケージ名 `desktop`）。ルートと同じ Cargo workspace で、ルートで `cargo run -p desktop` で起動する。`default-members` はサーバーだけなので、`-p` なしの `cargo run`・`build`・`test` と Docker イメージは gpui をビルドしない（Docker はロックファイルの解決のために `desktop/Cargo.toml` だけを入れる） |
 | UI | gpui `=0.2.2` + Atelier（`main` の固定コミット。`TextInput` がまだリリースに入っていないため。次のタグが出たらタグに移す）。Glass を既定にし、OS のライト/ダークに合わせる |
 | サーバーとの関係 | `knowledge-garden` をライブラリとして path 依存する。モデルの型（`Entry` など）を共有し、ローカルサーバーも同じコードで動かす |
 | 通信 | Garden の REST API（`/api/v1`）を `reqwest` で呼ぶ。ローカルでもリモートでも同じ経路にして、権限と入力検証をサーバー側の1か所に保つ |
@@ -53,13 +53,13 @@ Knowledge Garden のデスクトップ版。[gpui](https://crates.io/crates/gpui
 | --- | --- |
 | 動かし方 | アプリのプロセス内で、同じ tokio ランタイム上に axum サーバーを立てる（`knowledge_garden::server`）。別のバイナリを同梱・探索しなくてよく、配布物が1つで済む |
 | 終了 | 「停止」を押すか、アプリを終了すると、グレースフルシャットダウンする。アプリを閉じたあとも動かし続ける常駐モードは持たない（必要なら NAS や Docker 版を使う） |
-| データ | `dirs::data_dir()/knowledge-garden-desktop/garden.db`。場所は設定で変えられる |
+| データ | `dirs::data_dir()/knowledge-garden-desktop/garden.db`、添付ファイルは同じ場所の `files/`。場所は `settings.json` の `local.data_dir` か環境変数 `KG_DESKTOP_DATA_DIR` で変えられる |
 | 待ち受け | 既定は `127.0.0.1:8787`（このコンピューターからだけ）。LAN に公開するスイッチで `0.0.0.0` に変える。ポートは変更可能で、使用中なら知らせる |
-| base URL | 既定は `http://localhost:<port>`。記事の URI に使われるので、最初の投稿後に変えると警告する |
-| 初回 | 管理者ユーザー（OS のユーザー名）と人間用トークンを作り、ローカル接続先として登録する。パスワードは設定画面から付けられる（ブラウザで開くときに使う） |
+| base URL | 既定は `http://localhost:<port>`。記事の URI に使われるので、最初の起動時にその値を設定に書き込み、あとでポートを変えても URI が変わらないようにする。画面でも「投稿を始めたあとは変えない」と案内する |
+| 初回 | 管理者ユーザー（OS のユーザー名。使えない文字なら `admin`）と人間用トークン（`desktop`）を作り、ローカル接続先として登録してログインする。トークンをなくしても、データベースを持つアプリ自身が同じ管理者に発行し直す（`server::issue_human_token`）。ブラウザ用のパスワードはサーバー画面から付けられる |
 | 自動起動 | 「アプリの起動時にサーバーも起動する」を設定で選べる（既定オン） |
-| 画面 | 状態（停止中・起動中・稼働中・エラー）、URL、稼働時間、ログ（`LogView`、tracing の出力を取り込む）、起動・停止・再起動、ブラウザで開く、バックアップ、エージェント用トークンの発行と MCP 設定の例（`claude mcp add ...` など）のコピー |
-| 連合 | 同期ループも動かす（間隔は設定可能、既定 300 秒）。ローカルの Garden を他の Garden と連合させる場合は、公開 URL が必要なので LAN 公開と base URL の設定が前提になる |
+| 画面 | サイドバーの「サーバー」。状態（停止中・起動中・稼働中・エラー、サイドバーにもバッジ）、URL、起動時刻、ログ（`LogView`。tracing の Garden の記録とリクエストごとの1行を取り込む）、起動・停止・再起動（設定を変えたら再起動を促す）、ブラウザで開く、バックアップ（データフォルダの `backups/`）、MCP のエンドポイントと API キー発行への導線。接続先が1つもないときは接続先画面に「このコンピューターで始める」を出す。ローカル接続先に切り替えたときに止まっていれば起動する |
+| 連合 | 同期ループも動かす（間隔は `local.sync_interval_secs`、既定 300 秒）。ローカルの Garden を他の Garden と連合させる場合は、公開 URL が必要なので LAN 公開と base URL の設定が前提になる |
 
 サーバー側には、`main.rs` の `serve` と `create-admin` の中身をライブラリ関数（`knowledge_garden::server::serve`、`bootstrap_admin`）に移し、CLI とデスクトップで共有する。
 

@@ -47,15 +47,24 @@ pub async fn bootstrap_admin(
             role: Role::Admin,
         })
         .await?;
+    let secret = issue_human_token(store, &user, token_name).await?;
+    Ok((user, secret))
+}
+
+/// Issues `user` a human token named `token_name` with their role's scopes,
+/// replacing an earlier token of that name, and returns its secret. For a
+/// program that owns the database (the desktop app's local server) and has
+/// lost its saved token.
+pub async fn issue_human_token(store: &dyn Store, user: &User, token_name: &str) -> Result<String> {
     let secret = generate_secret(TOKEN_PREFIX);
     store
-        .create_token(NewToken {
+        .reissue_token(NewToken {
             user_id: user.id.clone(),
             name: token_name.to_string(),
             kind: TokenKind::Human,
-            scopes: scopes_for_role(Role::Admin),
+            scopes: scopes_for_role(user.role),
             token_hash: hash_secret(&secret),
         })
         .await?;
-    Ok((user, secret))
+    Ok(secret)
 }

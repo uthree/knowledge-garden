@@ -8,7 +8,7 @@ use gpui::prelude::*;
 use gpui::{Context, Entity, EventEmitter, Subscription, Window, div, px};
 
 use crate::api::{self, Client};
-use crate::app::Nav;
+use crate::app::{Nav, ServerAction};
 use crate::runtime;
 use crate::settings::{Connection, ConnectionKind, Settings, SettingsStore, new_id};
 use crate::widgets::{self, PasswordField, PasswordSubmit};
@@ -221,7 +221,15 @@ impl Render for ConnectPage {
                 )
                 .child(if self.settings.connections.is_empty() {
                     EmptyState::new(IconName::Folder, "まだ接続先がありません")
-                        .description("下のフォームで Garden の URL を入れてください。")
+                        .description(
+                            "NAS などで動いている Garden の URL を下のフォームに入れるか、専用のサーバーなしでこのコンピューターに Garden を作れます。",
+                        )
+                        .action(
+                            Button::new("start-local", "このコンピューターで始める")
+                                .primary()
+                                .icon(IconName::Play)
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(Nav::Server(ServerAction::Start)))),
+                        )
                         .into_any_element()
                 } else {
                     saved.into_any_element()
