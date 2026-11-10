@@ -100,6 +100,24 @@ pub struct NewComment {
     pub entry_version: Option<i64>,
 }
 
+pub struct NewAttachment {
+    pub entry_id: String,
+    pub name: String,
+    pub content_type: String,
+    pub size: i64,
+    pub sha256: String,
+    pub token_id: String,
+}
+
+/// An attachment listed in a peer's feed item (its bytes are fetched separately).
+#[derive(Debug, Clone)]
+pub struct MirrorAttachment {
+    pub name: String,
+    pub content_type: String,
+    pub size: i64,
+    pub sha256: String,
+}
+
 #[derive(Default)]
 pub struct EntryFilter {
     pub kind: Option<EntryKind>,
@@ -207,6 +225,21 @@ pub trait CommentStore: Send + Sync {
 }
 
 #[async_trait]
+pub trait AttachmentStore: Send + Sync {
+    /// Adds a file to a local entry and marks the entry as changed. With
+    /// `replace`, a file of the same name is replaced; its sha256 is returned.
+    async fn add_attachment(&self, a: NewAttachment, replace: bool) -> Result<(Attachment, Option<String>)>;
+    async fn list_attachments(&self, entry_id: &str) -> Result<Vec<Attachment>>;
+    async fn get_attachment(&self, entry_id: &str, name: &str) -> Result<Option<Attachment>>;
+    /// Removes a file and marks the entry as changed. Returns the file's sha256.
+    async fn delete_attachment(&self, entry_id: &str, name: &str) -> Result<Option<String>>;
+    /// Whether any attachment still uses this blob.
+    async fn blob_in_use(&self, sha256: &str) -> Result<bool>;
+    /// Whether a local entry that is shared with peers (public or federated) attaches this blob.
+    async fn blob_shared(&self, sha256: &str) -> Result<bool>;
+}
+
+#[async_trait]
 pub trait SearchStore: Send + Sync {
     /// Searches the current version of entries visible under `vis`.
     async fn search(&self, query: &SearchQuery, vis: &VisibilityFilter) -> Result<Page<SearchRow>>;
@@ -272,6 +305,8 @@ pub struct MirrorEntry {
     pub tags: Vec<String>,
     pub content: VersionContent,
     pub links: Vec<RawLink>,
+    /// Replaces the mirror's attachments; their blobs must already be stored.
+    pub attachments: Vec<MirrorAttachment>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -295,9 +330,10 @@ pub trait FederationStore: Send + Sync {
     async fn feed_rows(&self, after: Option<(&str, &str)>, limit: i64) -> Result<Vec<FeedRow>>;
     async fn raw_links(&self, entry_id: &str) -> Result<Vec<RawLink>>;
     async fn apply_mirror(&self, entry: MirrorEntry) -> Result<MirrorOutcome>;
-    /// Hides a mirrored entry that its origin no longer shares. Returns false if unknown.
+    /// Hides a mirrored entry that its origin no longer shares and drops its
+    /// attachments. Returns false if unknown.
     async fn withdraw_mirror(&self, origin: &str, uri: &str) -> Result<bool>;
 }
 
-pub trait Store: AccountStore + EntryStore + CommentStore + SearchStore + FederationStore {}
-impl<T: AccountStore + EntryStore + CommentStore + SearchStore + FederationStore> Store for T {}
+pub trait Store: AccountStore + EntryStore + CommentStore + SearchStore + FederationStore + AttachmentStore {}
+impl<T: AccountStore + EntryStore + CommentStore + SearchStore + FederationStore + AttachmentStore> Store for T {}

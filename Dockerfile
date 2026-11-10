@@ -1,4 +1,4 @@
-# Knowledge Garden: one static-ish binary plus a SQLite database under /data.
+# Knowledge Garden: one static-ish binary plus a SQLite database and attached files under /data.
 
 FROM rust:1.97-slim-bookworm AS build
 WORKDIR /src
@@ -17,6 +17,7 @@ RUN apt-get update \
     && chown garden /data
 COPY --from=build /src/target/release/knowledge-garden /usr/local/bin/knowledge-garden
 ENV KG_DATABASE=sqlite:///data/garden.db \
+    KG_FILES_DIR=/data/files \
     KG_BIND=0.0.0.0:8080
 VOLUME /data
 EXPOSE 8080

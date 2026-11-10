@@ -24,6 +24,10 @@ pub struct Config {
     pub default_visibility: Visibility,
     /// Maximum writes (new entries, revisions, comments) per agent token per hour; 0 = unlimited.
     pub agent_writes_per_hour: u32,
+    /// Directory for attachment files (content-addressed blobs).
+    pub files_dir: std::path::PathBuf,
+    /// Largest attachment accepted, in bytes (uploads and files mirrored from peers).
+    pub max_attachment_bytes: u64,
 }
 
 impl Config {
@@ -35,11 +39,22 @@ impl Config {
             registration: Registration::Invite,
             default_visibility: Visibility::Public,
             agent_writes_per_hour: 60,
+            files_dir: "files".into(),
+            max_attachment_bytes: 100 * 1024 * 1024,
         }
     }
 
     pub fn entry_uri(&self, id: &str) -> String {
         format!("{}/entries/{id}", self.base_url)
+    }
+
+    /// Where a browser or agent downloads an attachment of an entry.
+    pub fn attachment_url(&self, entry_id: &str, name: &str) -> String {
+        format!(
+            "{}/entries/{entry_id}/files/{}",
+            self.base_url,
+            crate::files::encode_path_segment(name)
+        )
     }
 
     /// Returns the local entry id if `uri` points at an entry of this Garden.

@@ -2,7 +2,8 @@
 //! the work, and renders the result (or the error) as HTML.
 
 use axum::Json;
-use axum::extract::{Form, Path, Query, State};
+use axum::extract::multipart::MultipartRejection;
+use axum::extract::{Form, Multipart, Path, Query, State};
 use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use chrono::{Duration, Utc};
@@ -12,7 +13,7 @@ use serde_json::Value;
 
 use super::view::{self, Current, csrf_field, notice_error, notice_info, time, urlencode};
 use super::{Ctx, markdown, redirect, redirect_with_cookie, safe_next, wants_html};
-use crate::api::{accounts, comments, entries, index, search};
+use crate::api::{accounts, attachments, comments, entries, index, search};
 use crate::auth::{Viewer, generate_secret, hash_password, hash_secret, validate_password, verify_password};
 use crate::config::Registration;
 use crate::error::{Error, Result};
@@ -342,7 +343,11 @@ async fn entry_page(
                     }
                 }
             }
-            div.at-markdown.kg-body { (markdown::render(&e.body)) }
+            div.at-markdown.kg-body { (markdown::render_with(&e.body, &e.id, &e.attachments)) }
+
+            @if !e.attachments.is_empty() || editable {
+                (attachments_section(&e, editable && !old))
+            }
 
             @if has_provenance {
                 details.kg-details {
@@ -430,6 +435,71 @@ async fn entry_page(
         .await)
 }
 
+/// `12.3 MB` style sizes.
+fn human_size(bytes: i64) -> String {
+    let b = bytes as f64;
+    if b < 1024.0 {
+        format!("{bytes} B")
+    } else if b < 1024.0 * 1024.0 {
+        format!("{:.1} KB", b / 1024.0)
+    } else if b < 1024.0 * 1024.0 * 1024.0 {
+        format!("{:.1} MB", b / 1024.0 / 1024.0)
+    } else {
+        format!("{:.1} GB", b / 1024.0 / 1024.0 / 1024.0)
+    }
+}
+
+fn preview_icon(p: crate::files::Preview) -> &'static str {
+    use crate::files::Preview;
+    match p {
+        Preview::Image => "eye",
+        Preview::Audio => "headphones",
+        Preview::Video => "play",
+        Preview::Pdf => "file",
+        Preview::Text => "code",
+        Preview::None => "paperclip",
+    }
+}
+
+/// Whether the body (or an old version's body) already shows this file.
+fn referenced(body: &str, a: &Attachment) -> bool {
+    body.contains(&format!("attachment:{}", a.name))
+        || body.contains(&format!("attachment:{}", crate::files::encode_path_segment(&a.name)))
+}
+
+/// The files of an entry. Files the body does not show are previewed here.
+fn attachments_section(e: &Entry, editable: bool) -> Markup {
+    html! {
+        section.kg-section #attachments {
+            div.kg-section__head {
+                h2.at-heading { "添付ファイル（" (e.attachments.len()) "）" }
+                @if editable {
+                    a.at-button.at-button--sm href={"/entries/" (e.id) "/edit#attachments"} { span data-icon="paperclip" {} "ファイルを添付" }
+                }
+            }
+            @if e.attachments.is_empty() {
+                p.at-muted { "まだありません。画像・音声・動画・PDF などを添付すると、本文の中で表示できます。" }
+            }
+            ul.kg-attachments {
+                @for a in &e.attachments {
+                    li.kg-attachment {
+                        div.kg-attachment__row {
+                            span data-icon=(preview_icon(a.preview)) {}
+                            a.kg-attachment__name href=(markdown::file_path(&e.id, &a.name)) { (a.name) }
+                            span.at-faint { (human_size(a.size)) " · " (a.content_type) }
+                            span.at-spacer {}
+                            a.at-small href={(markdown::file_path(&e.id, &a.name)) "?download=1"} { "ダウンロード" }
+                        }
+                        @if a.preview != crate::files::Preview::None && !referenced(&e.body, a) {
+                            div.kg-attachment__preview { (maud::PreEscaped(markdown::embed_html(&e.id, a, ""))) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn comment_view(c: &Comment, e: &Entry, can_reply: bool, ctx: &Ctx) -> Markup {
     html! {
         div.kg-comment #{"comment-" (c.id)} {
@@ -439,7 +509,7 @@ fn comment_view(c: &Comment, e: &Entry, can_reply: bool, ctx: &Ctx) -> Markup {
                 @if let Some(v) = c.entry_version { span.at-faint { "版 " (v) " に対して" } }
                 span.at-faint { (time(&c.created_at)) }
             }
-            div.at-markdown { (markdown::render(&c.body)) }
+            div.at-markdown { (markdown::render_with(&c.body, &e.id, &e.attachments)) }
             @if let Some(env) = &c.environment {
                 details.kg-details {
                     summary { "試した環境" }
@@ -656,6 +726,7 @@ pub async fn new_form(ctx: Ctx) -> Response {
         let body = html! {
             h1.at-title { "記事を書く" }
             (entry_form(&ctx, "/new", &EntryForm::default(), None, None))
+            p.at-small.at-muted { "画像・音声・動画・PDF などのファイルは、投稿したあと編集画面で添付できます。" }
         };
         Ok(ctx.page("記事を書く", Current::default(), "", body).await)
     }
@@ -718,7 +789,9 @@ async fn editable(ctx: &Ctx, id: &str) -> Result<Entry> {
     if !can_edit(&auth.0, &access) {
         return Err(Error::forbidden("記事を編集できるのは作者と管理者だけです"));
     }
-    ctx.state.store.get_entry(id, None).await?.ok_or(Error::NotFound)
+    let mut e = ctx.state.store.get_entry(id, None).await?.ok_or(Error::NotFound)?;
+    e.attachments = attachments::attachments_of(&ctx.state, id).await?;
+    Ok(e)
 }
 
 fn form_from(e: &Entry) -> EntryForm {
@@ -737,10 +810,70 @@ fn form_from(e: &Entry) -> EntryForm {
 }
 
 async fn edit_page(ctx: &Ctx, e: &Entry, f: &EntryForm, error: Option<&str>) -> Response {
+    edit_page_with(ctx, e, f, error, None).await
+}
+
+/// The files of an entry being edited: Markdown to paste, removal, and upload.
+fn attachments_editor(ctx: &Ctx, e: &Entry, error: Option<&str>) -> Markup {
+    let max_mb = ctx.state.config.max_attachment_bytes.div_ceil(1024 * 1024);
+    html! {
+        section.kg-section.kg-attachments-editor #attachments {
+            h2.at-heading { "添付ファイル" }
+            @if let Some(err) = error { (notice_error(err)) }
+            @if !e.attachments.is_empty() {
+                ul.kg-attachments {
+                    @for (i, a) in e.attachments.iter().enumerate() {
+                        li.kg-attachment {
+                            div.kg-attachment__row {
+                                @if a.preview == crate::files::Preview::Image {
+                                    img.kg-attachment__thumb src=(markdown::file_path(&e.id, &a.name)) alt="" loading="lazy";
+                                } @else {
+                                    span data-icon=(preview_icon(a.preview)) {}
+                                }
+                                a.kg-attachment__name href=(markdown::file_path(&e.id, &a.name)) { (a.name) }
+                                span.at-faint { (human_size(a.size)) }
+                                span.at-spacer {}
+                                form method="post" action={"/entries/" (e.id) "/attachments/delete"} {
+                                    (csrf_field(ctx.session.as_ref()))
+                                    input type="hidden" name="name" value=(a.name);
+                                    button.at-button.at-button--sm type="submit" { span data-icon="trash" {} "削除" }
+                                }
+                            }
+                            div.kg-secret {
+                                code.at-mono #{"att-md-" (i)} { (a.markdown) }
+                                button.at-button.at-button--sm type="button" data-kg-copy={"att-md-" (i)} { span data-icon="copy" {} "コピー" }
+                            }
+                        }
+                    }
+                }
+                p.at-small.at-muted { "コピーした Markdown を本文に貼ると、その位置に画像・音声・動画・PDF が表示されます。" }
+            }
+            form.kg-form.kg-upload method="post" action={"/entries/" (e.id) "/attachments"} enctype="multipart/form-data" {
+                (csrf_field(ctx.session.as_ref()))
+                label.kg-check {
+                    input type="checkbox" name="replace" value="1";
+                    span { "同じ名前のファイルがあれば置き換える" }
+                }
+                div.at-form-field {
+                    label for="f-files" { "ファイルを選ぶ（複数可）" }
+                    input #f-files type="file" name="file" multiple required;
+                    span.at-form-field__help {
+                        "1ファイル " (max_mb) " MB まで。ファイルは記事と同じ公開範囲になります。"
+                        "本文の未保存の変更は失われるので、先に保存してください。"
+                    }
+                }
+                div.kg-actions { button.at-button type="submit" { span data-icon="paperclip" {} "添付する" } }
+            }
+        }
+    }
+}
+
+async fn edit_page_with(ctx: &Ctx, e: &Entry, f: &EntryForm, error: Option<&str>, att_error: Option<&str>) -> Response {
     let body = html! {
         h1.at-title { "編集: " (e.title) }
-        p.at-muted { "本文を変えると新しい版として保存され、前の版も残ります。状態・タグ・公開範囲は版を作らずに変わります。" }
+        p.at-muted { "本文を変えると新しい版として保存され、前の版も残ります。状態・タグ・公開範囲は版を作らずに変わります。添付ファイルは版に含まれず、すべての版で共有されます。" }
         (entry_form(ctx, &format!("/entries/{}/edit", e.id), f, Some(e), error))
+        (attachments_editor(ctx, e, att_error))
     };
     ctx.page(
         "記事を編集",
@@ -826,6 +959,151 @@ async fn save_edit(ctx: &Ctx, e: &Entry, f: &EntryForm) -> Result<Response> {
         .await?;
     }
     Ok(redirect(&format!("/entries/{}", e.id)))
+}
+
+// ---------------------------------------------------------------- files
+
+/// `GET /entries/{id}/files/{name}`: an attachment, for signed-in browsers,
+/// guests and token holders alike.
+pub async fn file(
+    ctx: Ctx,
+    viewer: std::result::Result<Viewer, Error>,
+    Path((id, name)): Path<(String, String)>,
+    Query(q): Query<attachments::DownloadQuery>,
+) -> Response {
+    let viewer = match viewer {
+        Ok(Viewer(Some(p))) => Some(p),
+        Ok(Viewer(None)) => ctx.viewer().cloned(),
+        Err(e) => return e.into_response(),
+    };
+    match attachments::serve(
+        &ctx.state,
+        viewer.as_ref(),
+        &id,
+        &name,
+        q.download.is_some(),
+        &ctx.headers,
+    )
+    .await
+    {
+        Ok(resp) => resp,
+        Err(Error::NotFound) if ctx.session.is_none() && wants_html(&ctx.headers) => {
+            redirect(&format!("/login?next={}", urlencode(&ctx.here)))
+        }
+        Err(Error::NotFound) if wants_html(&ctx.headers) => ctx.error_page(Error::NotFound).await,
+        Err(e) => e.into_response(),
+    }
+}
+
+/// Uploads from the edit page. The form puts the CSRF token and the replace
+/// checkbox before the files, so they are checked before anything is stored.
+pub async fn upload_files(
+    ctx: Ctx,
+    Path(id): Path<String>,
+    mp: std::result::Result<Multipart, MultipartRejection>,
+) -> Response {
+    let r = async {
+        let e = editable(&ctx, &id).await?;
+        let result = store_uploads(&ctx, &e, mp).await;
+        match result {
+            Err(err) if err.is_correctable() || matches!(err, Error::Conflict(_)) => {
+                let e = editable(&ctx, &id).await?;
+                let mut resp = edit_page_with(&ctx, &e, &form_from(&e), None, Some(&err.to_string())).await;
+                *resp.status_mut() = err.status();
+                Ok(resp)
+            }
+            other => other,
+        }
+    }
+    .await;
+    ctx.finish(r).await
+}
+
+async fn store_uploads(
+    ctx: &Ctx,
+    e: &Entry,
+    mp: std::result::Result<Multipart, MultipartRejection>,
+) -> Result<Response> {
+    let auth = ctx.auth()?;
+    let mut mp = mp.map_err(|r| Error::bad_request(format!("フォームを読めませんでした: {}", r.body_text())))?;
+    let broken = |err: axum::extract::multipart::MultipartError| {
+        Error::bad_request(format!("アップロードが途中で切れました: {err}"))
+    };
+    let mut checked = false;
+    let mut replace = false;
+    let mut stored = 0;
+    while let Some(mut field) = mp.next_field().await.map_err(broken)? {
+        match field.name() {
+            Some("csrf") => {
+                let csrf = field.text().await.map_err(broken)?;
+                ctx.check_form(Some(&csrf))?;
+                checked = true;
+            }
+            Some("replace") => replace = true,
+            Some("file") => {
+                if !checked {
+                    ctx.check_form(None)?;
+                    checked = true;
+                }
+                let Some(raw_name) = field.file_name().filter(|n| !n.is_empty()) else {
+                    continue;
+                };
+                let name = crate::files::sanitize_name(raw_name);
+                let declared = field.content_type().map(str::to_string);
+                ctx.state.write_limiter.check_write(&auth.0)?;
+                let mut writer = ctx.state.files.writer(ctx.state.config.max_attachment_bytes).await?;
+                while let Some(chunk) = field.chunk().await.map_err(broken)? {
+                    writer.write(&chunk).await.map_err(|err| match err {
+                        Error::PayloadTooLarge(_) => Error::PayloadTooLarge(format!(
+                            "{name} は大きすぎます（1ファイル {} MB まで）",
+                            ctx.state.config.max_attachment_bytes.div_ceil(1024 * 1024)
+                        )),
+                        other => other,
+                    })?;
+                }
+                let blob = writer.finish().await?;
+                attachments::attach(&ctx.state, &auth.0, &e.id, &name, declared.as_deref(), blob, replace)
+                    .await
+                    .map_err(|err| match err {
+                        Error::Conflict(_) => Error::bad_request(format!(
+                            "「{name}」という名前のファイルがすでにあります。名前を変えるか、「同じ名前のファイルがあれば置き換える」にチェックを入れてください"
+                        )),
+                        other => other,
+                    })?;
+                stored += 1;
+            }
+            _ => {}
+        }
+    }
+    if !checked {
+        ctx.check_form(None)?;
+    }
+    if stored == 0 {
+        return Err(Error::bad_request("添付するファイルを選んでください"));
+    }
+    Ok(redirect(&format!("/entries/{}/edit#attachments", e.id)))
+}
+
+#[derive(Deserialize, Default)]
+pub struct DeleteFileForm {
+    csrf: Option<String>,
+    name: Option<String>,
+}
+
+pub async fn delete_file(ctx: Ctx, Path(id): Path<String>, Form(f): Form<DeleteFileForm>) -> Response {
+    let r = async {
+        let auth = ctx.auth()?;
+        ctx.check_form(f.csrf.as_deref())?;
+        attachments::delete(
+            State(ctx.state.clone()),
+            auth,
+            Path((id.clone(), f.name.clone().unwrap_or_default())),
+        )
+        .await?;
+        Ok(redirect(&format!("/entries/{id}/edit#attachments")))
+    }
+    .await;
+    ctx.finish(r).await
 }
 
 // ---------------------------------------------------------------- signing in

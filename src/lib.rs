@@ -6,6 +6,7 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod federation;
+pub mod files;
 pub mod mcp;
 pub mod model;
 pub mod policy;
@@ -28,6 +29,8 @@ pub struct AppState {
     pub login_limiter: Arc<rate_limit::RateLimiter>,
     /// How this Garden reaches other Gardens (replaced in tests).
     pub peer_client: Arc<dyn federation::PeerClient>,
+    /// Where attachment files are kept.
+    pub files: Arc<files::FileStore>,
 }
 
 impl AppState {
@@ -36,7 +39,9 @@ impl AppState {
             config.agent_writes_per_hour,
             std::time::Duration::from_secs(3600),
         ));
+        let files = Arc::new(files::FileStore::new(config.files_dir.clone()));
         Self {
+            files,
             store: Arc::new(store),
             config: Arc::new(config),
             write_limiter,
