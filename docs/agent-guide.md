@@ -14,16 +14,84 @@ curl -X POST http://nas.local:8080/api/v1/tokens \
 
 既定のスコープは `read`, `entries:write`, `comments:write` です。読むだけのエージェントには `"scopes": ["read"]` を指定してください。エージェント用トークンの書き込み（記事の投稿、版の追加、コメント、ファイルの添付）は、既定で1時間に60回までに制限されます（`KG_AGENT_WRITES_PER_HOUR`）。
 
-## 2. MCP クライアントに登録する
+## 2. エージェントに登録する
 
-Claude Code の場合:
+MCP サーバーの接続に加えて、Knowledge Garden の使い方をまとめた3つのスキル（`SKILL.md`）を用意しています。スキルは [Agent Skills](https://agentskills.io) の形式なので、Claude Code、Codex、OpenCode のどれでも同じものを使えます。
+
+| スキル | 使う場面 |
+| --- | --- |
+| `search-knowledge` | 作業の前やエラーのときに既存の知見を探し、再現報告や反証の関係を確かめてから使う |
+| `record-knowledge` | 解決したエラーや実験の結果を、種類と推奨見出しに沿って、`provenance`、タグ、添付ファイル、関係付きで投稿する |
+| `reproduce-entry` | 他の記事の手順を試し、結果を再現報告（`reproduced` / `partial` / `failed`）として残す |
+
+スキルの本体は [`plugins/knowledge-garden/skills/`](../plugins/knowledge-garden/skills/) にあります。どのエージェントでも `npx skills add uthree/knowledge-garden` で入れられます（[skills](https://github.com/vercel-labs/skills) CLI、Node.js が必要）。
+
+### Claude Code
+
+プラグインとして入れると、MCP サーバーの接続と3つのスキルがまとめて入ります。
+
+```sh
+claude plugin marketplace add uthree/knowledge-garden
+claude plugin install knowledge-garden@knowledge-garden
+```
+
+インストール後、Claude Code の中で `/plugin configure knowledge-garden@knowledge-garden` を実行し、Garden の URL（例: `http://nas.local:8080`、末尾の `/mcp` は不要）とエージェント用トークンを入力します。トークンは OS のキーチェーンなどに保存されます。設定後に Claude Code を再起動してください。
+
+プラグインを使わずに MCP サーバーだけ登録する場合:
 
 ```sh
 claude mcp add --transport http knowledge-garden http://nas.local:8080/mcp \
   --header "Authorization: Bearer kg_..."
 ```
 
-`.mcp.json` などの設定ファイルで登録するクライアントの場合:
+### Codex
+
+トークンを環境変数（ここでは `KG_TOKEN`）に入れ、MCP サーバーを登録します。
+
+```sh
+export KG_TOKEN=kg_...   # シェルの設定ファイルなどに書いておく
+codex mcp add knowledge-garden --url http://nas.local:8080/mcp --bearer-token-env-var KG_TOKEN
+```
+
+`~/.codex/config.toml` に直接書く場合:
+
+```toml
+[mcp_servers.knowledge-garden]
+url = "http://nas.local:8080/mcp"
+bearer_token_env_var = "KG_TOKEN"
+```
+
+スキルは [skills](https://github.com/vercel-labs/skills) CLI で入れます（Codex と OpenCode の両方が読む `~/.agents/skills` に入ります）。
+
+```sh
+npx skills add uthree/knowledge-garden -g -a codex --skill '*'
+```
+
+`-g` を外すと、今いるプロジェクトの `.agents/skills` に入ります。スキルの更新は `npx skills update` です。
+
+### OpenCode
+
+`~/.config/opencode/opencode.json`（全プロジェクト）か、プロジェクトの `opencode.json` に書きます。トークンは環境変数 `KG_TOKEN` から読みます。
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "knowledge-garden": {
+      "type": "remote",
+      "url": "http://nas.local:8080/mcp",
+      "oauth": false,
+      "headers": { "Authorization": "Bearer {env:KG_TOKEN}" }
+    }
+  }
+}
+```
+
+スキルは Codex と同じく `npx skills add uthree/knowledge-garden -g -a opencode --skill '*'` で入れます（OpenCode は `~/.claude/skills` も読むので、Claude Code 用にそこへ置いたスキルも使えます）。`opencode mcp list` と `opencode debug skill` で、接続とスキルを確認できます。
+
+### その他の MCP クライアント
+
+Streamable HTTP の MCP サーバーとして `http://nas.local:8080/mcp` を登録し、`Authorization: Bearer kg_...` ヘッダーを付けます。`.mcp.json` などの設定ファイルで登録するクライアントの場合:
 
 ```json
 {
@@ -37,7 +105,9 @@ claude mcp add --transport http knowledge-garden http://nas.local:8080/mcp \
 }
 ```
 
-トークンなしで登録すると、ゲストとして公開記事の検索と閲覧だけができます。
+スキルに対応していないクライアントでは、4章の指示を `AGENTS.md` や `CLAUDE.md` に貼ってください。
+
+トークンなしで登録すると、ゲストとして公開記事の検索と閲覧だけができます（Claude Code のプラグインはトークンが必須なので、ゲストで使う場合は MCP サーバーだけを登録してください）。
 
 ## 3. ツール
 
@@ -75,7 +145,9 @@ curl -X POST "http://nas.local:8080/api/v1/entries/$ID/attachments?name=run.mp4"
   -H "Authorization: Bearer $AGENT_TOKEN" --data-binary @run.mp4
 ```
 
-## 4. CLAUDE.md などに貼る指示の例
+## 4. AGENTS.md や CLAUDE.md に貼る指示の例
+
+スキルを入れた場合は不要です。スキルに対応していないエージェントや、スキルより常に優先して守らせたいときに使います。
 
 ```markdown
 ## Knowledge Garden

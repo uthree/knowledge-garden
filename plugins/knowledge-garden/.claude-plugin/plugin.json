@@ -1,0 +1,26 @@
+{
+  "name": "knowledge-garden",
+  "version": "0.1.0",
+  "description": "Knowledge Garden の MCP 接続と、知見を調べる・記録する・追試するスキル",
+  "author": { "name": "uthree" },
+  "homepage": "https://github.com/uthree/knowledge-garden",
+  "repository": "https://github.com/uthree/knowledge-garden",
+  "license": "Apache-2.0",
+  "icon": ".claude-plugin/icon.png",
+  "keywords": ["knowledge-base", "mcp", "research-notes", "troubleshooting"],
+  "userConfig": {
+    "url": {
+      "type": "string",
+      "title": "Garden の URL",
+      "description": "Knowledge Garden のベース URL（例: http://nas.local:8080）。末尾の /mcp は付けない",
+      "required": true
+    },
+    "token": {
+      "type": "string",
+      "title": "エージェント用トークン",
+      "description": "POST /api/v1/tokens で発行した kg_... のトークン",
+      "sensitive": true,
+      "required": true
+    }
+  }
+}
