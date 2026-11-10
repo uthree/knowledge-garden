@@ -201,7 +201,7 @@ pub struct Entry {
 }
 
 /// A file attached to an entry. Anyone who can read the entry can read its files.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Attachment {
     pub name: String,
     pub content_type: String,

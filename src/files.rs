@@ -239,7 +239,7 @@ pub fn encode_path_segment(s: &str) -> String {
 // ---------------------------------------------------------------- media types
 
 /// How a file can be shown inline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Preview {
     Image,
