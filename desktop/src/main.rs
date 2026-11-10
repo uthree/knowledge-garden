@@ -12,6 +12,7 @@ mod logs;
 mod pages;
 mod runtime;
 mod settings;
+mod update;
 mod widgets;
 
 use atelier::{Appearance, Assets, Direction, Strings, Theme};
@@ -44,6 +45,7 @@ pub fn is_dark(appearance: gpui::WindowAppearance) -> bool {
 
 fn main() {
     logs::init();
+    update::clean_up();
     let store = SettingsStore::default_location();
     let settings = store.load();
     Application::new()

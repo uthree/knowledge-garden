@@ -71,9 +71,11 @@ Auris Studio の更新（リリース確認 → 裏でダウンロード → サ
 | --- | --- |
 | リリース | このリポジトリの GitHub Releases。タグは `desktop-vX.Y.Z`（サーバーとは別に版を振る）。`.github/workflows/desktop-release.yml` がタグで macOS（aarch64）、Windows（x86_64）、Linux（x86_64）を作る |
 | 成果物 | `knowledge-garden-desktop-vX.Y.Z-macos-aarch64.tar.gz`（`Knowledge Garden.app`）、`-windows-x86_64.zip`、`-linux-x86_64.tar.gz` |
-| 確認 | 起動の少し後と、開いている間は6時間ごとに `GET /repos/uthree/knowledge-garden/releases` を見て、`desktop-v` で始まる最新の安定版を探す。ヘルプの「更新を確認」ですぐ確認する。設定でオフにできる |
+| 確認 | 起動の少し後と、開いている間は6時間ごとに `GET /repos/uthree/knowledge-garden/releases` を見て、`desktop-v` で始まる最新の安定版を探し、見つけたら取得まで進める。設定の「アップデート」の「今すぐ確認」ですぐ確認する。設定でオフにでき、切り替えは次の起動から |
 | 検証 | アセットの名前、URL（`https://github.com/uthree/knowledge-garden/releases/download/<tag>/<name>`）、サイズの上限、GitHub が付ける `digest`（`sha256:...`）を確認し、ダウンロード後にサイズと SHA-256 が一致したものだけを使う。digest のないリリースはリリースページへの案内だけにする |
-| 適用 | ダウンロードと展開が済んだら、動いている実行ファイル（バンドル）を `.old` に改名して新しいものを置く。Unix と Windows のどちらでも、実行中のファイルの改名はできる。差し替えたら「再起動して更新」を案内し、押されたら新しい実行ファイルを起動して終了する。押さなくても次の起動から新しい版になる。古いファイルは次の起動時に消す |
+| 適用 | ダウンロードと展開が済んだら、動いている実行ファイル（バンドル）を `.old` に改名して新しいものを置く。Unix と Windows のどちらでも、実行中のファイルの改名はできる。差し替えたら「再起動して更新」を案内し、押されたらローカルサーバーを止めて（新しい版がポートを使えるように）から新しい実行ファイル（macOS では `open -n` でバンドル）を起動して終了する。押さなくても次の起動から新しい版になる。古いファイルと作業用の `.knowledge-garden-update/` は次の起動時に消す。展開は OS の `tar`（Windows 10 以降の bsdtar は zip も読む） |
+| 案内 | 設定画面の「アップデート」に今の版と状態（確認中・最新・ダウンロード中の進み具合・準備完了・失敗）を出す。準備ができたらステータスバーにも「再起動して更新」を出す |
+| ビルド | macOS は `Knowledge Garden.app`（`Info.plist`、`assets/app-icons/knowledge-garden/icon.icns`、アドホック署名）を tar.gz に、Windows と Linux は実行ファイルを入れたフォルダを zip / tar.gz にする。タグと `desktop/Cargo.toml` の版が違えば失敗させる。リリースを出す手順は、版を上げてマージし `git tag desktop-vX.Y.Z && git push origin desktop-vX.Y.Z` |
 | 対象外 | `cargo run` や `cargo install` で入れたもの（実行ファイルが Cargo の target / bin の下にある）と、置き場所に書き込めないもの。これらはリリースページを開くボタンだけを出す |
 
 ## エージェントパネル
@@ -119,4 +121,5 @@ macOS では Finder から起動したアプリにシェルの環境変数が渡
 - トークンを OS のキーチェーンに置くか
 - アプリを閉じてもローカルサーバーを動かし続ける常駐（トレイ）モード。gpui 0.2 にトレイがないので保留
 - コード署名と公証（macOS、Windows）。当面は未署名で、初回起動の手順をリリースノートに書く
-- 添付ファイル（別スレッドで実装中）のデスクトップでの表示
+- 添付ファイル（Web 版に入った）のデスクトップでの表示。ローカルサーバーは添付ファイルをデータフォルダの `files/` に置く
+- Windows の実行ファイルへのアイコンの埋め込み

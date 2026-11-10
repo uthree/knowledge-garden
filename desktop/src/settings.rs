@@ -235,6 +235,20 @@ pub struct Settings {
     pub direction: String,
     pub local: LocalServerSettings,
     pub agent: AgentSettings,
+    pub update: UpdateSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateSettings {
+    /// Look for a new release shortly after start and every few hours, and download it.
+    pub auto_check: bool,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self { auto_check: true }
+    }
 }
 
 impl Default for Settings {
@@ -246,6 +260,7 @@ impl Default for Settings {
             direction: "glass".into(),
             local: LocalServerSettings::default(),
             agent: AgentSettings::default(),
+            update: UpdateSettings::default(),
         }
     }
 }

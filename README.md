@@ -174,7 +174,9 @@ NAS やサーバーを用意しなくても、「サーバー」画面（また�
 
 タイトルバーの「アシスタント」（⌘/Ctrl+J）で開くエージェントパネルでは、読んでいる記事の要約や質問を AI エージェントに頼めます。Claude Code・Codex・OpenCode・Antigravity の CLI（各自でサインイン済みのもの）か、Anthropic API・OpenAI 互換 API（OpenAI、Ollama など。キーは環境変数で渡す）を選べます。エージェントは読むだけで、記事の投稿や編集はしません。設計は [docs/desktop.md](docs/desktop.md) を参照してください。
 
-リポジトリのルートで次のように起動します（`-p` を付けない `cargo run` はサーバーです）。
+ビルド済みのものは [Releases](https://github.com/uthree/knowledge-garden/releases) の `desktop-v*` にあります（macOS（Apple シリコン）・Windows・Linux）。展開して置くだけで動き、新しいリリースが出ると自動で取得して「再起動して更新」を案内します（設定の「アップデート」でオフにできます）。いまは署名していないので、macOS では初回だけ Finder で右クリックして「開く」を選んでください。
+
+ソースから動かすには、リポジトリのルートで次のようにします（`-p` を付けない `cargo run` はサーバーです）。
 
 ```sh
 cargo run -p desktop --release

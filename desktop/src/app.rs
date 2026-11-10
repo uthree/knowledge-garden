@@ -26,6 +26,7 @@ use crate::runtime;
 use crate::settings::{
     AgentSettings, Connection, ConnectionKind, LOCAL_CONNECTION_ID, LocalServerSettings, Settings, SettingsStore,
 };
+use crate::update::{UpdateState, Updater};
 use crate::widgets::{kind_icon, kind_label};
 
 actions!(garden, [NewEntry, FocusSearch, Back, Reload, ToggleAgent]);
@@ -115,6 +116,8 @@ pub enum Nav {
     /// The agent panel's backends or choice changed; save them.
     AgentChanged(AgentSettings),
     ToggleAgent,
+    /// Start the downloaded version and quit this one.
+    Relaunch,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -149,6 +152,7 @@ pub struct GardenApp {
     server: Entity<LocalServer>,
     server_page: Option<Entity<ServerPage>>,
     agent: Entity<AgentPanelView>,
+    updater: Entity<Updater>,
     /// Switch to the local Garden once its server is up.
     open_when_started: bool,
     status: Option<(SharedString, Tone)>,
@@ -178,6 +182,11 @@ impl GardenApp {
         subscriptions.push(cx.observe(&server, |_, _, cx| cx.notify()));
         // Quitting stops the server, finishing the requests in flight.
         subscriptions.push(cx.on_app_quit(|this, cx| this.server.update(cx, |s, cx| s.stop(cx))));
+        let updater = {
+            let automatic = settings.update.auto_check;
+            cx.new(|cx| Updater::new(automatic, cx))
+        };
+        subscriptions.push(cx.observe(&updater, |_, _, cx| cx.notify()));
         let mut app = Self {
             store,
             settings,
@@ -191,6 +200,7 @@ impl GardenApp {
             server,
             server_page: None,
             agent,
+            updater,
             open_when_started: false,
             status: None,
             switcher_open: false,
@@ -337,6 +347,24 @@ impl GardenApp {
         atelier::set_window_background(window, &theme);
         theme.install(cx);
         cx.notify();
+    }
+
+    /// Stops the local server (so the new version can take its port), then starts the new
+    /// version and quits.
+    fn relaunch(&mut self, cx: &mut Context<Self>) {
+        let stopped = self.server.update(cx, |s, cx| s.stop(cx));
+        cx.spawn(async move |this, cx| {
+            stopped.await;
+            this.update(cx, |this, cx| match this.updater.read(cx).relaunch() {
+                Ok(()) => cx.quit(),
+                Err(e) => {
+                    this.status = Some((e.into(), Tone::Danger));
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn save_settings(&mut self, cx: &mut Context<Self>) {
@@ -494,7 +522,8 @@ impl GardenApp {
             None => {
                 let session = self.session.clone();
                 let settings = self.settings.clone();
-                let page = cx.new(|cx| AccountPage::new(session, settings, window, cx));
+                let updater = self.updater.clone();
+                let page = cx.new(|cx| AccountPage::new(session, settings, updater, window, cx));
                 self._subscriptions.push(cx.subscribe_in(&page, window, Self::on_nav));
                 self.account = Some(page.clone());
                 page
@@ -561,8 +590,12 @@ impl GardenApp {
                 self.save_settings(cx);
             }
             Nav::ToggleAgent => self.toggle_agent(window, cx),
+            Nav::Relaunch => self.relaunch(cx),
             Nav::SettingsChanged(settings) => {
-                self.settings = settings;
+                // Only what the settings page owns: its copy of the rest may be stale.
+                self.settings.appearance = settings.appearance;
+                self.settings.direction = settings.direction;
+                self.settings.update = settings.update;
                 self.save_settings(cx);
                 self.connect
                     .update(cx, |c, cx| c.set_settings(self.settings.clone(), cx));
@@ -701,10 +734,43 @@ impl GardenApp {
                 Tone::Neutral,
             )
         });
+        let update = match self.updater.read(cx).state() {
+            UpdateState::Ready(available) => Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme.spacing.sm)
+                    .child(
+                        Label::new(format!("バージョン {} の準備ができました", available.version))
+                            .size(TextSize::XSmall)
+                            .color(TextColor::Accent),
+                    )
+                    .child(
+                        Button::new("relaunch", "再起動して更新")
+                            .size(ControlSize::Small)
+                            .primary()
+                            .on_click(cx.listener(|this, _, _, cx| this.relaunch(cx))),
+                    ),
+            ),
+            UpdateState::Manual(available) => {
+                let page = available.page();
+                Some(
+                    div().flex().items_center().child(
+                        Button::new("release-page", format!("バージョン {} が出ています", available.version))
+                            .size(ControlSize::Small)
+                            .ghost()
+                            .icon(IconName::ArrowUp)
+                            .on_click(move |_, _, cx| cx.open_url(&page)),
+                    ),
+                )
+            }
+            _ => None,
+        };
         StatusBar::new()
             .message(message)
             .tone(tone)
             .busy(self.connecting)
+            .trailing(div().children(update))
             .trailing(Label::new(who).size(TextSize::XSmall).color(TextColor::Muted))
             .trailing(div().w(theme.spacing.sm))
     }
