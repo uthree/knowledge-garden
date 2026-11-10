@@ -25,6 +25,11 @@ const ENDPOINTS: &[(&str, &str, &str)] = &[
         "entry kinds with recommended sections, statuses, relations and visibilities",
     ),
     ("POST", "/api/v1/register", "register with an invite code"),
+    (
+        "POST",
+        "/api/v1/login",
+        "exchange a username and password for a human token (apps such as the desktop client)",
+    ),
     ("GET", "/api/v1/me", "the caller and their token"),
     ("GET", "/api/v1/tokens", "list your tokens"),
     ("POST", "/api/v1/tokens", "issue a token (human tokens only)"),

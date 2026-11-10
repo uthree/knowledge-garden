@@ -6,11 +6,13 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod federation;
+pub mod labels;
 pub mod mcp;
 pub mod model;
 pub mod policy;
 pub mod rate_limit;
 pub mod search;
+pub mod server;
 pub mod store;
 pub mod web;
 

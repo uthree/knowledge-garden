@@ -518,6 +518,30 @@ impl AccountStore for SqliteStore {
             .into_token()
     }
 
+    async fn reissue_token(&self, token: NewToken) -> Result<Token> {
+        let scopes: Vec<&str> = token.scopes.iter().map(|s| s.as_str()).collect();
+        sqlx::query(
+            "INSERT INTO tokens (id, user_id, name, kind, scopes, token_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT (user_id, name) DO UPDATE SET kind = excluded.kind, scopes = excluded.scopes, \
+             token_hash = excluded.token_hash, created_at = excluded.created_at, last_used_at = NULL, revoked_at = NULL",
+        )
+        .bind(new_id())
+        .bind(&token.user_id)
+        .bind(&token.name)
+        .bind(token.kind.as_str())
+        .bind(serde_json::to_string(&scopes).map_err(Error::internal)?)
+        .bind(&token.token_hash)
+        .bind(now())
+        .execute(&self.pool)
+        .await?;
+        sqlx::query_as::<_, TokenRow>("SELECT * FROM tokens WHERE user_id = ? AND name = ?")
+            .bind(&token.user_id)
+            .bind(&token.name)
+            .fetch_one(&self.pool)
+            .await?
+            .into_token()
+    }
+
     async fn list_tokens(&self, user_id: &str) -> Result<Vec<Token>> {
         sqlx::query_as::<_, TokenRow>("SELECT * FROM tokens WHERE user_id = ? ORDER BY created_at")
             .bind(user_id)
