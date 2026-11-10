@@ -48,6 +48,12 @@ enum Command {
         /// Seconds between pulls from approved peer Gardens (0 = only on demand).
         #[arg(long, env = "KG_SYNC_INTERVAL_SECS", default_value_t = 300)]
         sync_interval_secs: u64,
+        /// Directory for attached files. Back it up together with the database.
+        #[arg(long, env = "KG_FILES_DIR", default_value = "files")]
+        files_dir: std::path::PathBuf,
+        /// Largest attached file accepted, in megabytes.
+        #[arg(long, env = "KG_MAX_ATTACHMENT_MB", default_value_t = 100)]
+        max_attachment_mb: u64,
     },
     /// Create an admin user and print their first token.
     CreateAdmin {
@@ -123,12 +129,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             default_visibility,
             agent_writes_per_hour,
             sync_interval_secs,
+            files_dir,
+            max_attachment_mb,
         } => {
             let mut config = Config::new(&base_url, &name);
             config.guest_read = guest_read;
             config.registration = registration;
             config.default_visibility = default_visibility;
             config.agent_writes_per_hour = agent_writes_per_hour;
+            config.files_dir = files_dir;
+            config.max_attachment_bytes = max_attachment_mb.saturating_mul(1024 * 1024);
             let state = AppState::new(store, config);
             if sync_interval_secs > 0 {
                 tokio::spawn(knowledge_garden::federation::run_sync_loop(

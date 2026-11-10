@@ -105,7 +105,11 @@ async fn initialize_and_list_tools() {
             "revise_entry",
             "update_entry",
             "link_entries",
-            "add_comment"
+            "add_comment",
+            "attach_file",
+            "list_attachments",
+            "get_attachment",
+            "delete_attachment"
         ]
     );
 
@@ -291,4 +295,104 @@ async fn agent_writes_are_rate_limited() {
         g.post("/api/v1/entries", Some(&human), body).await.0,
         StatusCode::CREATED
     );
+}
+
+#[tokio::test]
+async fn agents_attach_and_read_files() {
+    let g = Garden::new().await;
+    let agent = g.agent_token(&g.admin, "claude-code").await;
+    let (_, created) = call(
+        &g,
+        Some(&agent),
+        "create_entry",
+        json!({ "kind": "research_note", "title": "学習曲線", "body": "![loss](attachment:loss.png)" }),
+    )
+    .await;
+    let id = created["entry"]["id"].as_str().unwrap().to_string();
+
+    // Binary as base64, text as text.
+    let png = [0x89u8, b'P', b'N', b'G', 1, 2, 3];
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(png);
+    let (err, a) = call(
+        &g,
+        Some(&agent),
+        "attach_file",
+        json!({ "entry_id": id, "name": "loss.png", "content_base64": b64 }),
+    )
+    .await;
+    assert!(!err, "{a}");
+    assert_eq!(a["preview"], "image");
+    assert_eq!(a["markdown"], "![loss.png](attachment:loss.png)");
+    let (err, a) = call(
+        &g,
+        Some(&agent),
+        "attach_file",
+        json!({ "entry_id": id, "name": "train.log", "content": "epoch 1 loss 0.5\n" }),
+    )
+    .await;
+    assert!(!err, "{a}");
+    assert_eq!(a["content_type"], "text/plain");
+
+    // Both content kinds at once, bad names and duplicates are errors.
+    let (err, _) = call(
+        &g,
+        Some(&agent),
+        "attach_file",
+        json!({ "entry_id": id, "name": "x.txt", "content": "a", "content_base64": "YQ==" }),
+    )
+    .await;
+    assert!(err);
+    let (err, e) = call(
+        &g,
+        Some(&agent),
+        "attach_file",
+        json!({ "entry_id": id, "name": "a b.txt", "content": "a" }),
+    )
+    .await;
+    assert!(err && e["status"] == 400, "{e}");
+    let (err, e) = call(
+        &g,
+        Some(&agent),
+        "attach_file",
+        json!({ "entry_id": id, "name": "train.log", "content": "b" }),
+    )
+    .await;
+    assert!(err && e["status"] == 409, "{e}");
+
+    let (_, list) = call(&g, Some(&agent), "list_attachments", json!({ "entry_id": id })).await;
+    assert_eq!(list.as_array().unwrap().len(), 2);
+    let (_, entry) = call(&g, Some(&agent), "get_entry", json!({ "id": id })).await;
+    assert_eq!(entry["entry"]["attachments"][0]["name"], "loss.png");
+
+    // Reading: text comes back as text, images as image content.
+    let v = rpc(
+        &g,
+        Some(&agent),
+        "tools/call",
+        json!({ "name": "get_attachment", "arguments": { "entry_id": id, "name": "train.log" } }),
+    )
+    .await;
+    assert_eq!(v["result"]["content"][1]["text"], "epoch 1 loss 0.5\n");
+    let v = rpc(
+        &g,
+        Some(&agent),
+        "tools/call",
+        json!({ "name": "get_attachment", "arguments": { "entry_id": id, "name": "loss.png" } }),
+    )
+    .await;
+    assert_eq!(v["result"]["content"][1]["type"], "image");
+    assert_eq!(v["result"]["content"][1]["mimeType"], "image/png");
+    assert_eq!(v["result"]["content"][1]["data"], b64);
+
+    let (err, _) = call(
+        &g,
+        Some(&agent),
+        "delete_attachment",
+        json!({ "entry_id": id, "name": "train.log" }),
+    )
+    .await;
+    assert!(!err);
+    let (_, list) = call(&g, Some(&agent), "list_attachments", json!({ "entry_id": id })).await;
+    assert_eq!(list.as_array().unwrap().len(), 1);
 }

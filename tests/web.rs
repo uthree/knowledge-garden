@@ -81,6 +81,61 @@ impl<'a> Browser<'a> {
             .await
     }
 
+    /// Posts a multipart form; `files` are (field, file name, bytes).
+    async fn multipart(&mut self, uri: &str, fields: &[(&str, &str)], files: &[(&str, &str, &[u8])]) -> Resp {
+        let boundary = "kgboundary7MA4YWxkTrZu0gW";
+        let mut body: Vec<u8> = Vec::new();
+        for (k, v) in fields {
+            body.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n").as_bytes(),
+            );
+        }
+        for (k, name, bytes) in files {
+            body.extend_from_slice(
+                format!(
+                    "--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"; filename=\"{name}\"\r\n\
+                     Content-Type: application/octet-stream\r\n\r\n"
+                )
+                .as_bytes(),
+            );
+            body.extend_from_slice(bytes);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        let mut req = Request::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .header(header::ACCEPT, "text/html")
+            .header(header::HOST, "garden.test")
+            .header(header::ORIGIN, "http://garden.test")
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            );
+        if let Some(c) = &self.cookie {
+            req = req.header(header::COOKIE, c);
+        }
+        let resp = self
+            .garden
+            .app
+            .clone()
+            .oneshot(req.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .map(|v| v.to_str().unwrap().to_string());
+        let body = String::from_utf8_lossy(&resp.into_body().collect().await.unwrap().to_bytes()).into_owned();
+        Resp {
+            status,
+            location,
+            cookie: None,
+            body,
+        }
+    }
+
     /// The CSRF token embedded in the settings page.
     async fn csrf(&mut self) -> String {
         let page = self.get("/settings").await;
@@ -464,4 +519,114 @@ async fn admins_invite_from_settings() {
         )
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn attach_files_and_preview_them_in_the_page() {
+    let g = Garden::new().await;
+    let mut b = signed_in(&g, "alice").await;
+    let csrf = b.csrf().await;
+    let r = b
+        .post(
+            "/new",
+            &[
+                ("csrf", &csrf),
+                ("kind", "research_note"),
+                ("title", "メディアの実験"),
+                (
+                    "body",
+                    "![損失](attachment:loss.png)\n\n![録音](attachment:Voice-memo.mp3)",
+                ),
+                ("visibility", "members"),
+            ],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
+    let path = r.location.unwrap();
+    let id = path.trim_start_matches("/entries/").to_string();
+
+    // The edit page has the upload form.
+    let page = b.get(&format!("{path}/edit")).await;
+    assert!(page.body.contains("enctype=\"multipart/form-data\""), "{}", page.body);
+
+    // Without the CSRF token nothing is stored.
+    let r = b
+        .multipart(&format!("{path}/attachments"), &[], &[("file", "loss.png", b"png")])
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+
+    // Several files at once; browser names with spaces become valid names.
+    let r = b
+        .multipart(
+            &format!("{path}/attachments"),
+            &[("csrf", &csrf)],
+            &[
+                ("file", "loss.png", b"\x89PNG"),
+                ("file", "Voice memo.mp3", b"ID3"),
+                ("file", "paper.pdf", b"%PDF-1.7"),
+            ],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
+    assert_eq!(r.location.as_deref(), Some(format!("{path}/edit#attachments").as_str()));
+    let (_, list) = g
+        .get(&format!("/api/v1/entries/{id}/attachments"), Some(&g.admin))
+        .await;
+    let names: Vec<&str> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["loss.png", "Voice-memo.mp3", "paper.pdf"]);
+
+    // The same name again is explained next to the form.
+    let r = b
+        .multipart(
+            &format!("{path}/attachments"),
+            &[("csrf", &csrf)],
+            &[("file", "loss.png", b"x")],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.body.contains("置き換える"), "{}", r.body);
+
+    // The page embeds what the body references and previews the rest.
+    let page = b.get(&path).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(
+        page.body
+            .contains(&format!("<img src=\"/entries/{id}/files/loss.png\" alt=\"損失\"")),
+        "{}",
+        page.body
+    );
+    assert!(page.body.contains(&format!(
+        "<audio controls preload=\"metadata\" src=\"/entries/{id}/files/Voice-memo.mp3\">"
+    )));
+    assert!(
+        page.body
+            .contains(&format!("<iframe src=\"/entries/{id}/files/paper.pdf\""))
+    );
+    assert!(page.body.contains("添付ファイル（3）"));
+
+    // The signed-in browser can fetch the members-only file; a guest is sent to sign in.
+    let r = b.get(&format!("/entries/{id}/files/loss.png")).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let mut guest = Browser::new(&g);
+    let r = guest.get(&format!("/entries/{id}/files/loss.png")).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    assert!(r.location.unwrap().starts_with("/login?next="));
+
+    // Removing a file.
+    let r = b
+        .post(
+            &format!("{path}/attachments/delete"),
+            &[("csrf", &csrf), ("name", "paper.pdf")],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
+    let (_, list) = g
+        .get(&format!("/api/v1/entries/{id}/attachments"), Some(&g.admin))
+        .await;
+    assert_eq!(list.as_array().unwrap().len(), 2);
 }

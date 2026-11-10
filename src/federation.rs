@@ -24,10 +24,12 @@ use serde_json::Value;
 use crate::AppState;
 use crate::error::{Error, Result};
 use crate::model::{AuthorRef, EntryKind, PostedVia, Relation, Status, Visibility, normalize_tags};
-use crate::store::{MirrorEntry, MirrorOutcome, Peer, PeerStatus, RawLink, VersionContent};
+use crate::store::{MirrorAttachment, MirrorEntry, MirrorOutcome, Peer, PeerStatus, RawLink, VersionContent};
 
 pub const WELL_KNOWN_PATH: &str = "/.well-known/knowledge-garden";
 pub const FEED_PATH: &str = "/federation/v1/feed";
+/// Attachment bytes by SHA-256, for approved peers.
+pub const FILES_PATH: &str = "/federation/v1/files/{sha256}";
 pub const HEADER_SIGNER: &str = "kg-signer";
 pub const HEADER_DATE: &str = "kg-date";
 pub const HEADER_SIGNATURE: &str = "kg-signature";
@@ -159,6 +161,19 @@ pub struct FeedEntry {
     pub author: AuthorRef,
     pub posted_via: PostedVia,
     pub links: Vec<FeedLink>,
+    /// Files attached to the entry; subscribers fetch them from `FILES_PATH`.
+    /// Left out when empty, so that items without files look as they did before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<FeedAttachment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FeedAttachment {
+    pub name: String,
+    pub content_type: String,
+    pub size: i64,
+    pub sha256: String,
 }
 
 /// One change in a Garden's feed. `signature` covers the canonical JSON of
@@ -220,6 +235,7 @@ pub async fn build_feed(state: &AppState, key: &GardenKey, after: Option<&str>, 
         let entry = if row.visibility.is_shareable() {
             let e = state.store.get_entry(&row.id, None).await?.ok_or(Error::NotFound)?;
             let links = state.store.raw_links(&row.id).await?;
+            let attachments = state.store.list_attachments(&row.id).await?;
             Some(FeedEntry {
                 kind: e.kind,
                 visibility: e.visibility,
@@ -242,6 +258,15 @@ pub async fn build_feed(state: &AppState, key: &GardenKey, after: Option<&str>, 
                         target_uri: l.target_uri,
                         target_version: l.target_version,
                         note: l.note,
+                    })
+                    .collect(),
+                attachments: attachments
+                    .into_iter()
+                    .map(|a| FeedAttachment {
+                        name: a.name,
+                        content_type: a.content_type,
+                        size: a.size,
+                        sha256: a.sha256,
                     })
                     .collect(),
             })
@@ -279,6 +304,8 @@ pub struct PeerResponse {
 #[async_trait]
 pub trait PeerClient: Send + Sync {
     async fn get(&self, url: &str, headers: Vec<(String, String)>) -> Result<PeerResponse>;
+    /// Downloads raw bytes (an attachment); fails if the body is longer than `max` bytes.
+    async fn get_bytes(&self, url: &str, headers: Vec<(String, String)>, max: u64) -> Result<(u16, Vec<u8>)>;
 }
 
 pub struct HttpPeerClient(reqwest::Client);
@@ -314,6 +341,30 @@ impl PeerClient for HttpPeerClient {
         let status = resp.status().as_u16();
         let body = resp.json().await.unwrap_or(Value::Null);
         Ok(PeerResponse { status, body })
+    }
+
+    async fn get_bytes(&self, url: &str, headers: Vec<(String, String)>, max: u64) -> Result<(u16, Vec<u8>)> {
+        let mut req = self.0.get(url).timeout(Duration::from_secs(600));
+        for (k, v) in headers {
+            req = req.header(k, v);
+        }
+        let mut resp = req
+            .send()
+            .await
+            .map_err(|e| Error::BadRequest(format!("could not reach {url}: {e}")))?;
+        let status = resp.status().as_u16();
+        let mut out = Vec::new();
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| Error::BadRequest(format!("download from {url} failed: {e}")))?
+        {
+            if (out.len() + chunk.len()) as u64 > max {
+                return Err(Error::PayloadTooLarge(format!("{url} is larger than {max} bytes")));
+            }
+            out.extend_from_slice(&chunk);
+        }
+        Ok((status, out))
     }
 }
 
@@ -414,6 +465,26 @@ fn validate_item(peer: &Peer, item: &FeedItem) -> std::result::Result<Option<Mir
         return Err("invalid provenance or version".into());
     }
     crate::model::validate_username(&e.author.username)?;
+    if e.attachments.len() as i64 > crate::files::MAX_ATTACHMENTS_PER_ENTRY {
+        return Err("too many attachments".into());
+    }
+    let mut attachments: Vec<MirrorAttachment> = Vec::with_capacity(e.attachments.len());
+    for a in &e.attachments {
+        let name = crate::files::validate_name(&a.name)?;
+        if !crate::files::is_sha256(&a.sha256) || a.size < 0 {
+            return Err(format!("invalid attachment {name}"));
+        }
+        if attachments.iter().any(|x| x.name == name) {
+            return Err(format!("duplicate attachment {name}"));
+        }
+        attachments.push(MirrorAttachment {
+            // Decided here, by the same rules as for local uploads, not taken from the peer.
+            content_type: crate::files::content_type_for(&name, Some(&a.content_type)).to_string(),
+            name,
+            size: a.size,
+            sha256: a.sha256.clone(),
+        });
+    }
     Ok(Some(MirrorEntry {
         origin: peer.base_url.clone(),
         uri: item.uri.clone(),
@@ -450,7 +521,83 @@ fn validate_item(peer: &Peer, item: &FeedItem) -> std::result::Result<Option<Mir
                 note: l.note.clone(),
             })
             .collect(),
+        attachments,
     }))
+}
+
+/// What happened when fetching a mirror's files.
+enum FetchOutcome {
+    /// Every listed file is stored (some may have been left out, see the report).
+    Ready(Vec<MirrorAttachment>),
+    /// A file did not match its signed hash: the item must not be applied.
+    Reject(String),
+}
+
+/// Makes sure the blobs of a mirrored entry are stored locally, downloading
+/// missing ones from the origin. Files over our size limit, or that the origin
+/// no longer shares, are left out. Network failures abort the sync so that the
+/// item is retried next time.
+async fn fetch_files(
+    state: &AppState,
+    key: &GardenKey,
+    peer: &Peer,
+    uri: &str,
+    attachments: Vec<MirrorAttachment>,
+    report: &mut SyncReport,
+) -> Result<FetchOutcome> {
+    let max = state.config.max_attachment_bytes;
+    let mut ready = Vec::with_capacity(attachments.len());
+    for a in attachments {
+        if a.size as u64 > max {
+            report.rejected.push(format!(
+                "{uri}: file {} is larger than this Garden's limit; left out",
+                a.name
+            ));
+            continue;
+        }
+        if !state.files.exists(&a.sha256).await {
+            let path = FILES_PATH.replace("{sha256}", &a.sha256);
+            let headers = sign_request(key, &state.config.base_url, "GET", &path);
+            let (status, bytes) = state
+                .peer_client
+                .get_bytes(&format!("{}{path}", peer.base_url), headers, max)
+                .await?;
+            if status == 404 {
+                report.rejected.push(format!(
+                    "{uri}: file {} is no longer shared by the origin; left out",
+                    a.name
+                ));
+                continue;
+            }
+            if status != 200 {
+                return Err(Error::BadRequest(format!("file {} returned {status}", a.name)));
+            }
+            let blob = state.files.put(&bytes, max).await?;
+            if blob.sha256 != a.sha256 {
+                crate::api::attachments::forget_blobs(state, [blob.sha256]).await;
+                return Ok(FetchOutcome::Reject(format!("file {} does not match its hash", a.name)));
+            }
+        }
+        ready.push(MirrorAttachment {
+            size: state.files.open(&a.sha256).await?.map_or(a.size, |(_, len)| len as i64),
+            ..a
+        });
+    }
+    Ok(FetchOutcome::Ready(ready))
+}
+
+/// The blobs a mirrored entry uses now, so that unused ones can be deleted after a change.
+async fn mirror_blobs(state: &AppState, uri: &str) -> Result<Vec<String>> {
+    Ok(match state.store.entry_id_by_uri(uri).await? {
+        Some(id) => state
+            .store
+            .list_attachments(&id)
+            .await?
+            .into_iter()
+            .map(|a| a.sha256)
+            .collect(),
+        None => Vec::new(),
+    })
 }
 
 /// Pulls everything new from one approved peer.
@@ -487,15 +634,29 @@ pub async fn sync_peer(state: &AppState, peer: &Peer) -> Result<SyncReport> {
             for item in &page.items {
                 report.received += 1;
                 match validate_item(peer, item) {
-                    Ok(Some(mirror)) => match state.store.apply_mirror(mirror).await {
-                        Ok(MirrorOutcome::Created) => report.created += 1,
-                        Ok(MirrorOutcome::Updated) => report.updated += 1,
-                        Err(e) => report.rejected.push(format!("{}: {e}", item.uri)),
-                    },
+                    Ok(Some(mut mirror)) => {
+                        let files = std::mem::take(&mut mirror.attachments);
+                        match fetch_files(state, &key, peer, &item.uri, files, &mut report).await? {
+                            FetchOutcome::Reject(reason) => {
+                                report.rejected.push(format!("{}: {reason}", item.uri));
+                                continue;
+                            }
+                            FetchOutcome::Ready(files) => mirror.attachments = files,
+                        }
+                        let before = mirror_blobs(state, &item.uri).await?;
+                        match state.store.apply_mirror(mirror).await {
+                            Ok(MirrorOutcome::Created) => report.created += 1,
+                            Ok(MirrorOutcome::Updated) => report.updated += 1,
+                            Err(e) => report.rejected.push(format!("{}: {e}", item.uri)),
+                        }
+                        crate::api::attachments::forget_blobs(state, before).await;
+                    }
                     Ok(None) => {
+                        let before = mirror_blobs(state, &item.uri).await?;
                         if state.store.withdraw_mirror(&peer.base_url, &item.uri).await? {
                             report.withdrawn += 1;
                         }
+                        crate::api::attachments::forget_blobs(state, before).await;
                     }
                     Err(reason) => report.rejected.push(format!("{}: {reason}", item.uri)),
                 }

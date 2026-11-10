@@ -274,6 +274,7 @@ impl EntryDetailRow {
             created_at: b.created_at,
             updated_at: b.updated_at,
             version_created_at: b.version_created_at,
+            attachments: Vec::new(),
         })
     }
 }
@@ -1576,6 +1577,26 @@ impl FederationStore for SqliteStore {
             .execute(&mut *tx)
             .await?;
         }
+        sqlx::query("DELETE FROM attachments WHERE entry_id = ?")
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+        for a in &m.attachments {
+            sqlx::query(
+                "INSERT INTO attachments (entry_id, name, content_type, size, sha256, token_id, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            )
+            .bind(&id)
+            .bind(&a.name)
+            .bind(&a.content_type)
+            .bind(a.size)
+            .bind(&a.sha256)
+            .bind(&token_id)
+            .bind(&updated_at)
+            .execute(&mut *tx)
+            .await?;
+        }
+
         // Links that pointed at this URI before it was mirrored now resolve locally.
         sqlx::query("UPDATE entry_links SET target_id = ? WHERE target_uri = ? AND target_id IS NULL")
             .bind(&id)
@@ -1591,14 +1612,178 @@ impl FederationStore for SqliteStore {
     async fn withdraw_mirror(&self, origin: &str, uri: &str) -> Result<bool> {
         // Versions are immutable, so a withdrawn mirror is hidden rather than deleted:
         // `private` entries are readable only by their author, and remote authors cannot sign in.
-        let r = sqlx::query(
-            "UPDATE entries SET visibility = 'private', updated_at = ? WHERE uri = ? AND origin = ? AND is_local = 0",
+        let mut tx = self.pool.begin().await?;
+        let id: Option<String> = sqlx::query_scalar(
+            "UPDATE entries SET visibility = 'private', updated_at = ? WHERE uri = ? AND origin = ? AND is_local = 0 RETURNING id",
         )
         .bind(now())
         .bind(uri)
         .bind(origin)
-        .execute(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
-        Ok(r.rows_affected() == 1)
+        if let Some(id) = &id {
+            sqlx::query("DELETE FROM attachments WHERE entry_id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(id.is_some())
+    }
+}
+
+type AttachmentTuple = (String, String, i64, String, String, String, DateTime<Utc>);
+
+fn attachment_from(row: AttachmentTuple) -> Result<Attachment> {
+    let (name, content_type, size, sha256, token_name, token_kind, created_at) = row;
+    Ok(Attachment {
+        preview: crate::files::Preview::of(&content_type),
+        name,
+        content_type,
+        size,
+        sha256,
+        url: String::new(),
+        markdown: String::new(),
+        posted_via: PostedVia {
+            name: token_name,
+            kind: parse(&token_kind)?,
+        },
+        created_at,
+    })
+}
+
+macro_rules! attachment_select {
+    () => {
+        "SELECT a.name, a.content_type, a.size, a.sha256, t.name, t.kind, a.created_at
+         FROM attachments a JOIN tokens t ON t.id = a.token_id"
+    };
+}
+
+#[async_trait]
+impl AttachmentStore for SqliteStore {
+    async fn add_attachment(&self, a: NewAttachment, replace: bool) -> Result<(Attachment, Option<String>)> {
+        let mut tx = self.pool.begin().await?;
+        let at = now();
+        // Marking the entry as changed first takes the write lock and sends the change to peers.
+        let r = sqlx::query("UPDATE entries SET updated_at = ? WHERE id = ? AND is_local = 1")
+            .bind(&at)
+            .bind(&a.entry_id)
+            .execute(&mut *tx)
+            .await?;
+        if r.rows_affected() == 0 {
+            return Err(Error::NotFound);
+        }
+        let old: Option<String> = sqlx::query_scalar("SELECT sha256 FROM attachments WHERE entry_id = ? AND name = ?")
+            .bind(&a.entry_id)
+            .bind(&a.name)
+            .fetch_optional(&mut *tx)
+            .await?;
+        match &old {
+            Some(_) if !replace => {
+                return Err(Error::Conflict(format!(
+                    "this entry already has a file named {}: choose another name or replace it",
+                    a.name
+                )));
+            }
+            Some(_) => {
+                sqlx::query("DELETE FROM attachments WHERE entry_id = ? AND name = ?")
+                    .bind(&a.entry_id)
+                    .bind(&a.name)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            None => {
+                let count: i64 = sqlx::query_scalar("SELECT count(*) FROM attachments WHERE entry_id = ?")
+                    .bind(&a.entry_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                if count >= crate::files::MAX_ATTACHMENTS_PER_ENTRY {
+                    return Err(Error::bad_request(format!(
+                        "an entry can have at most {} files",
+                        crate::files::MAX_ATTACHMENTS_PER_ENTRY
+                    )));
+                }
+            }
+        }
+        sqlx::query(
+            "INSERT INTO attachments (entry_id, name, content_type, size, sha256, token_id, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&a.entry_id)
+        .bind(&a.name)
+        .bind(&a.content_type)
+        .bind(a.size)
+        .bind(&a.sha256)
+        .bind(&a.token_id)
+        .bind(&at)
+        .execute(&mut *tx)
+        .await?;
+        let row: AttachmentTuple =
+            sqlx::query_as(concat!(attachment_select!(), " WHERE a.entry_id = ? AND a.name = ?"))
+                .bind(&a.entry_id)
+                .bind(&a.name)
+                .fetch_one(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        Ok((attachment_from(row)?, old.filter(|o| *o != a.sha256)))
+    }
+
+    async fn list_attachments(&self, entry_id: &str) -> Result<Vec<Attachment>> {
+        let rows: Vec<AttachmentTuple> = sqlx::query_as(concat!(
+            attachment_select!(),
+            " WHERE a.entry_id = ? ORDER BY a.created_at, a.name"
+        ))
+        .bind(entry_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(attachment_from).collect()
+    }
+
+    async fn get_attachment(&self, entry_id: &str, name: &str) -> Result<Option<Attachment>> {
+        let row: Option<AttachmentTuple> =
+            sqlx::query_as(concat!(attachment_select!(), " WHERE a.entry_id = ? AND a.name = ?"))
+                .bind(entry_id)
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await?;
+        row.map(attachment_from).transpose()
+    }
+
+    async fn delete_attachment(&self, entry_id: &str, name: &str) -> Result<Option<String>> {
+        let mut tx = self.pool.begin().await?;
+        let sha: Option<String> =
+            sqlx::query_scalar("DELETE FROM attachments WHERE entry_id = ? AND name = ? RETURNING sha256")
+                .bind(entry_id)
+                .bind(name)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if sha.is_some() {
+            sqlx::query("UPDATE entries SET updated_at = ? WHERE id = ?")
+                .bind(now())
+                .bind(entry_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(sha)
+    }
+
+    async fn blob_in_use(&self, sha256: &str) -> Result<bool> {
+        Ok(
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM attachments WHERE sha256 = ?)")
+                .bind(sha256)
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    async fn blob_shared(&self, sha256: &str) -> Result<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM attachments a JOIN entries e ON e.id = a.entry_id
+                            WHERE a.sha256 = ? AND e.is_local = 1 AND e.visibility IN ('public', 'federated'))",
+        )
+        .bind(sha256)
+        .fetch_one(&self.pool)
+        .await?)
     }
 }

@@ -33,6 +33,8 @@ KG_BASE_URL=http://nas.local:8080 ./target/release/knowledge-garden serve
 | `KG_DEFAULT_VISIBILITY` | `public` | 公開範囲を指定しない投稿の既定値 |
 | `KG_AGENT_WRITES_PER_HOUR` | `60` | エージェント用トークン1つあたりの1時間の書き込み上限（0で無制限） |
 | `KG_SYNC_INTERVAL_SECS` | `300` | 承認した他の Garden から変更を取り込む間隔（0で手動のみ） |
+| `KG_FILES_DIR` | `files` | 添付ファイルの置き場所（Docker では `/data/files`） |
+| `KG_MAX_ATTACHMENT_MB` | `100` | 添付できるファイル1つの上限（MB） |
 
 ## NAS で動かす（Docker）
 
@@ -47,7 +49,7 @@ docker compose exec garden knowledge-garden create-admin uthree
 docker compose exec -it garden knowledge-garden set-password uthree
 ```
 
-データベースは `./data/garden.db` に置かれます。
+データベースは `./data/garden.db`、添付ファイルは `./data/files/` に置かれます。
 
 **バックアップ**: 動かしたままで、整合性の取れた複製を作れます。
 
@@ -57,12 +59,15 @@ docker compose exec garden knowledge-garden backup /data/backups/garden-$(date +
 
 NAS のタスクスケジューラーや cron で毎晩実行し、`data/backups/` を別のディスクやクラウドに同期しておくと安心です。古い複製は適宜消してください。`garden.db` を `cp` で直接コピーすると、書き込み途中の内容が抜けることがあるので、この `backup` コマンドを使ってください。
 
+添付ファイル（`data/files/`）はデータベースに含まれないので、こちらも同期してください。ファイルは中身のハッシュを名前にして保存され、一度書いたら変わらないので、`rsync -a data/files/ <バックアップ先>/files/` のような単純なコピーで安全に取れます（`tmp/` は除いて構いません）。データベースの複製を作ってからファイルを同期すると、復元したときに参照先のファイルがそろいます。
+
 **復元**:
 
 ```sh
 docker compose down
 rm -f data/garden.db-wal data/garden.db-shm
 cp data/backups/garden-2026-11-09.db data/garden.db
+# 添付ファイルも戻す（バックアップ先から data/files/ へ）
 docker compose up -d
 ```
 
@@ -101,6 +106,10 @@ curl -G localhost:8080/api/v1/search --data-urlencode 'q=QueryBuilder -python' -
 
 # 正規表現で探す
 curl -G localhost:8080/api/v1/search --data-urlencode 'regex=error\[E\d{4}\]'
+
+# ファイルを添付する（本文からは ![説明](attachment:loss-curve.png) で表示できる）
+curl -X POST "localhost:8080/api/v1/entries/$ID/attachments?name=loss-curve.png" \
+  -H "Authorization: Bearer $AGENT_TOKEN" --data-binary @loss-curve.png
 ```
 
 ## API 一覧（v1）
@@ -123,12 +132,16 @@ curl -G localhost:8080/api/v1/search --data-urlencode 'regex=error\[E\d{4}\]'
 | GET | `/entries/{id}` | 記事の URI。`/api/v1/entries/{id}` と同じ内容を返す（ブラウザには記事のページ） |
 | GET/POST | `/api/v1/entries/{id}/links` | 関係（引用、追試など）の一覧・追加 |
 | GET/POST | `/api/v1/entries/{id}/comments` | コメント・再現報告の一覧・投稿 |
+| GET/POST | `/api/v1/entries/{id}/attachments` | 添付ファイルの一覧・追加（`?name=<ファイル名>[&replace=true]`、本文にファイルそのもの） |
+| GET/DELETE | `/api/v1/entries/{id}/attachments/{name}` | 添付ファイルの取得（`Range` 対応、`?download=1` で必ずダウンロード）・削除 |
+| GET | `/entries/{id}/files/{name}` | 添付ファイルの URL（記事を読める人だけが読める。ブラウザのログインでもトークンでも可） |
 | GET | `/api/v1/tags` | タグと使用数 |
 | GET/POST | `/api/v1/peers` | 連合先の Garden の一覧・承認（管理者） |
 | PATCH | `/api/v1/peers/{id}` | 連合先の承認・ブロック（管理者） |
 | POST | `/api/v1/peers/{id}/sync` | 連合先からすぐに取り込む（管理者） |
 | GET | `/.well-known/knowledge-garden` | この Garden の名前、URL、公開鍵 |
 | GET | `/federation/v1/feed` | 承認済みの Garden 向けの署名付き変更フィード |
+| GET | `/federation/v1/files/{sha256}` | 承認済みの Garden 向けの、共有記事の添付ファイル（署名付きリクエスト） |
 | GET | `/api/v1/search` | 検索（`q`, `regex`, `regex_field` と一覧と同じ絞り込み） |
 | POST | `/mcp` | MCP エンドポイント（Streamable HTTP） |
 

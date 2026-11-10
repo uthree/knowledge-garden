@@ -45,6 +45,12 @@ pub fn router(state: AppState) -> Router {
         .route("/entries/{id}", get(pages::entry))
         .route("/entries/{id}/edit", get(pages::edit_form).post(pages::edit))
         .route("/entries/{id}/comments", post(pages::comment))
+        .route("/entries/{id}/files/{name}", get(pages::file))
+        .route(
+            "/entries/{id}/attachments",
+            post(pages::upload_files).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route("/entries/{id}/attachments/delete", post(pages::delete_file))
         .route("/new", get(pages::new_form).post(pages::create))
         .route("/login", get(pages::login_form).post(pages::login))
         .route("/logout", post(pages::logout))
@@ -283,6 +289,7 @@ impl Ctx {
             Error::Forbidden(m) => (StatusCode::FORBIDDEN, "この操作はできません", m.clone()),
             Error::Conflict(m) => (StatusCode::CONFLICT, "競合しています", m.clone()),
             Error::TooManyRequests(m) => (StatusCode::TOO_MANY_REQUESTS, "しばらく待ってください", m.clone()),
+            Error::PayloadTooLarge(m) => (StatusCode::PAYLOAD_TOO_LARGE, "ファイルが大きすぎます", m.clone()),
             Error::Internal(detail) => {
                 tracing::error!("internal error: {detail}");
                 (

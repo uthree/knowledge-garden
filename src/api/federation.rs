@@ -46,6 +46,32 @@ pub async fn feed(
     Ok(Json(build_feed(&state, &key, q.after.as_deref(), limit).await?))
 }
 
+/// `GET /federation/v1/files/{sha256}`: the bytes of a file attached to a local
+/// entry that is shared with peers, for approved peers only.
+pub async fn file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
+    Path(sha256): Path<String>,
+) -> Result<axum::response::Response> {
+    use axum::response::IntoResponse;
+    let path_and_query = uri.path_and_query().map(|p| p.as_str()).unwrap_or_default();
+    verify_request(&state, &headers, "GET", path_and_query).await?;
+    if !crate::files::is_sha256(&sha256) || !state.store.blob_shared(&sha256).await? {
+        return Err(Error::NotFound);
+    }
+    let (file, len) = state.files.open(&sha256).await?.ok_or(Error::NotFound)?;
+    let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file));
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (axum::http::header::CONTENT_LENGTH, len.to_string()),
+        ],
+        body,
+    )
+        .into_response())
+}
+
 fn require_admin(auth: &Auth) -> Result<()> {
     if auth.0.is_admin() {
         Ok(())
