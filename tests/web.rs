@@ -161,13 +161,13 @@ async fn pages_and_json_share_urls() {
     let css = b.get("/assets/atelier/atelier.css").await;
     assert_eq!(css.status, StatusCode::OK);
     assert!(
-        home.body.contains("/assets/icon.svg"),
+        home.body.contains("/assets/app-icon.svg"),
         "the logo is the favicon and in the header"
     );
     for path in [
-        "/assets/icon.svg",
-        "/assets/icon.ico",
-        "/assets/icon-256.png",
+        "/assets/app-icon.svg",
+        "/assets/app-icon.ico",
+        "/assets/app-icon.png",
         "/favicon.ico",
     ] {
         assert_eq!(b.get(path).await.status, StatusCode::OK, "{path}");
