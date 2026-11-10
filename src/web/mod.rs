@@ -55,7 +55,7 @@ pub fn router(state: AppState) -> Router {
         .route("/settings/tokens/{id}/revoke", post(pages::revoke_token))
         .route("/settings/invites", post(pages::create_invite))
         .route("/assets/{*path}", get(asset))
-        .route("/favicon.ico", get(|| asset(Path("icon.ico".to_string()))))
+        .route("/favicon.ico", get(|| asset(Path("app-icon.ico".to_string()))))
         .layer(map_response(security_headers))
         .with_state(state)
 }
@@ -84,21 +84,23 @@ async fn security_headers(mut resp: Response) -> Response {
 }
 
 const ASSETS: &[(&str, &str, &[u8])] = &[
-    // The Knowledge Garden logo (assets/app-icons): small variant for tabs and the title bar.
+    // The Knowledge Garden logo (assets/app-icons). Like the Auris Studio site, tabs and the title
+    // bar show the full element cell with its register number, version and name, not the
+    // simplified small variant. New file names so browsers drop the cached simplified icon.
     (
-        "icon.svg",
+        "app-icon.svg",
         "image/svg+xml",
-        include_bytes!("../../assets/app-icons/knowledge-garden/icon-small.svg"),
+        include_bytes!("../../assets/app-icons/knowledge-garden/icon.svg"),
     ),
     (
-        "icon.ico",
+        "app-icon.ico",
         "image/x-icon",
-        include_bytes!("../../assets/app-icons/knowledge-garden/icon.ico"),
+        include_bytes!("../../assets/app-icons/knowledge-garden/favicon.ico"),
     ),
     (
-        "icon-256.png",
+        "app-icon.png",
         "image/png",
-        include_bytes!("../../assets/app-icons/knowledge-garden/png/256.png"),
+        include_bytes!("../../assets/app-icons/knowledge-garden/png/512.png"),
     ),
     ("garden.css", "text/css", include_bytes!("../../assets/garden.css")),
     ("garden.js", "text/javascript", include_bytes!("../../assets/garden.js")),

@@ -206,9 +206,9 @@ pub fn layout(chrome: &Chrome, title: &str, body: Markup) -> Markup {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                link rel="icon" href={"/assets/icon.svg?v=" (ASSET_VERSION)} type="image/svg+xml";
-                link rel="icon" href={"/assets/icon.ico?v=" (ASSET_VERSION)} sizes="16x16 32x32 48x48";
-                link rel="apple-touch-icon" href={"/assets/icon-256.png?v=" (ASSET_VERSION)};
+                link rel="icon" href={"/assets/app-icon.svg?v=" (ASSET_VERSION)} type="image/svg+xml";
+                link rel="icon" href={"/assets/app-icon.ico?v=" (ASSET_VERSION)} sizes="16x16 32x32 48x48";
+                link rel="apple-touch-icon" href={"/assets/app-icon.png?v=" (ASSET_VERSION)};
                 title { (title) " · " (chrome.garden) }
                 script src={"/assets/theme.js?v=" (ASSET_VERSION)} {}
                 link rel="stylesheet" href={"/assets/atelier/atelier.css?v=" (ASSET_VERSION)};
@@ -224,7 +224,7 @@ pub fn layout(chrome: &Chrome, title: &str, body: Markup) -> Markup {
                                 span data-icon="menu" {}
                             }
                             a.kg-brand href="/" {
-                                img.kg-brand__logo src={"/assets/icon.svg?v=" (ASSET_VERSION)} alt="" width="20" height="20";
+                                img.kg-brand__logo src={"/assets/app-icon.svg?v=" (ASSET_VERSION)} alt="" width="24" height="24";
                                 span.kg-brand__name { (chrome.garden) }
                             }
                         }
@@ -313,9 +313,9 @@ pub fn bare(title: &str, body: Markup) -> Markup {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (title) }
-                link rel="icon" href={"/assets/icon.svg?v=" (ASSET_VERSION)} type="image/svg+xml";
-                link rel="icon" href={"/assets/icon.ico?v=" (ASSET_VERSION)} sizes="16x16 32x32 48x48";
-                link rel="apple-touch-icon" href={"/assets/icon-256.png?v=" (ASSET_VERSION)};
+                link rel="icon" href={"/assets/app-icon.svg?v=" (ASSET_VERSION)} type="image/svg+xml";
+                link rel="icon" href={"/assets/app-icon.ico?v=" (ASSET_VERSION)} sizes="16x16 32x32 48x48";
+                link rel="apple-touch-icon" href={"/assets/app-icon.png?v=" (ASSET_VERSION)};
                 script src={"/assets/theme.js?v=" (ASSET_VERSION)} {}
                 link rel="stylesheet" href={"/assets/atelier/atelier.css?v=" (ASSET_VERSION)};
                 link rel="stylesheet" href={"/assets/garden.css?v=" (ASSET_VERSION)};
