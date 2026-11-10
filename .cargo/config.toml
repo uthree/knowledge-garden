@@ -1,0 +1,4 @@
+# `cargo desktop` at the repository root starts the desktop app (desktop/ is its own workspace,
+# so the server's build and Docker image do not carry gpui). `cargo run` stays the server.
+[alias]
+desktop = "run --release --manifest-path desktop/Cargo.toml"
