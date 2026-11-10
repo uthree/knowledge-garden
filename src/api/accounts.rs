@@ -76,6 +76,58 @@ pub async fn register(
     ))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoginRequest {
+    pub username: String,
+    pub password: String,
+    /// Name of the human token to issue. Signing in again gives that token a new
+    /// secret (the old one stops working) instead of adding another token.
+    #[serde(default = "desktop_token_name")]
+    pub token_name: String,
+}
+
+fn desktop_token_name() -> String {
+    "desktop".into()
+}
+
+/// Exchanges a username and password for a human token, for apps such as the
+/// desktop client. Shares the web login's limit (10 tries per username per 15 minutes).
+pub async fn login(State(state): State<AppState>, Json(req): Json<LoginRequest>) -> Result<(StatusCode, Json<Value>)> {
+    let username = req.username.trim().to_lowercase();
+    let name = req.token_name.trim().to_string();
+    if name.is_empty() || name.chars().count() > 64 {
+        return Err(Error::bad_request("token name must be 1-64 characters"));
+    }
+    if name == "web" {
+        return Err(Error::bad_request(
+            "the token name 'web' is reserved for browser sessions",
+        ));
+    }
+    state
+        .login_limiter
+        .hit_at(&username, std::time::Instant::now())
+        .map_err(|_| Error::TooManyRequests("too many login attempts; wait 15 minutes and try again".into()))?;
+    let user = crate::auth::check_password(&state, &username, req.password)
+        .await?
+        .ok_or_else(|| Error::Unauthorized("wrong username or password".into()))?;
+    let secret = generate_secret(TOKEN_PREFIX);
+    let token = state
+        .store
+        .reissue_token(NewToken {
+            user_id: user.id.clone(),
+            name,
+            kind: TokenKind::Human,
+            scopes: scopes_for_role(user.role),
+            token_hash: hash_secret(&secret),
+        })
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "user": user, "token": token, "secret": secret })),
+    ))
+}
+
 pub async fn me(Auth(p): Auth) -> Json<Value> {
     Json(json!({ "user": p.user, "token": p.token }))
 }

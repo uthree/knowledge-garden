@@ -101,7 +101,7 @@ pub fn scopes_for_role(role: Role) -> Vec<Scope> {
     scopes
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
     pub id: String,
     pub username: String,
@@ -110,7 +110,7 @@ pub struct User {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Token {
     pub id: String,
     pub user_id: String,
@@ -139,7 +139,7 @@ impl Principal {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Invite {
     pub id: String,
     pub role: Role,
@@ -164,14 +164,14 @@ pub struct PostedVia {
     pub kind: TokenKind,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReproStats {
     pub reproduced: i64,
     pub partial: i64,
     pub failed: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
     pub id: String,
     pub uri: String,
@@ -230,7 +230,7 @@ impl Attachment {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntrySummary {
     pub id: String,
     pub uri: String,
@@ -250,7 +250,7 @@ pub struct EntrySummary {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionInfo {
     pub version: i64,
     pub title: String,
@@ -270,7 +270,7 @@ pub struct EntryAccess {
     pub is_local: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutgoingLink {
     pub id: String,
     pub relation: Relation,
@@ -283,7 +283,7 @@ pub struct OutgoingLink {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncomingLink {
     pub id: String,
     pub relation: Relation,
@@ -295,13 +295,13 @@ pub struct IncomingLink {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Links {
     pub outgoing: Vec<OutgoingLink>,
     pub incoming: Vec<IncomingLink>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Comment {
     pub id: String,
     pub entry_id: String,
@@ -316,13 +316,13 @@ pub struct Comment {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TagCount {
     pub tag: String,
     pub count: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Page<T> {
     pub items: Vec<T>,
     pub total: i64,

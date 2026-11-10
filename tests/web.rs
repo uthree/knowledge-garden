@@ -630,3 +630,51 @@ async fn attach_files_and_preview_them_in_the_page() {
         .await;
     assert_eq!(list.as_array().unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn apps_exchange_a_password_for_a_human_token() {
+    let g = Garden::new().await;
+    signed_in(&g, "dave").await;
+
+    let (s, _) = g
+        .post(
+            "/api/v1/login",
+            None,
+            json!({ "username": "dave", "password": "wrong password" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _) = g
+        .post(
+            "/api/v1/login",
+            None,
+            json!({ "username": "dave", "password": "a long password", "token_name": "web" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "the browser's token name is reserved");
+
+    let login = || async {
+        let (s, v) = g
+            .post(
+                "/api/v1/login",
+                None,
+                json!({ "username": "Dave", "password": "a long password" }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        assert_eq!(v["token"]["kind"], "human");
+        assert_eq!(v["token"]["name"], "desktop");
+        v["secret"].as_str().unwrap().to_string()
+    };
+    let first = login().await;
+    let (s, me) = g.get("/api/v1/me", Some(&first)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(me["user"]["username"], "dave");
+
+    // Signing in again replaces the earlier desktop token instead of piling them up.
+    let second = login().await;
+    let (s, _) = g.get("/api/v1/me", Some(&first)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _) = g.get("/api/v1/me", Some(&second)).await;
+    assert_eq!(s, StatusCode::OK);
+}

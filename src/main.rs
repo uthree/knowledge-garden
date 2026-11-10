@@ -1,12 +1,12 @@
 use std::net::SocketAddr;
 
 use clap::{Parser, Subcommand};
-use knowledge_garden::auth::{INVITE_PREFIX, TOKEN_PREFIX, generate_secret, hash_secret};
+use knowledge_garden::AppState;
+use knowledge_garden::auth::{INVITE_PREFIX, generate_secret, hash_secret};
 use knowledge_garden::config::{Config, Registration};
-use knowledge_garden::model::{DEFAULT_SCOPES, Role, Scope, TokenKind, Visibility, validate_username};
+use knowledge_garden::model::{Role, Visibility};
 use knowledge_garden::store::sqlite::SqliteStore;
-use knowledge_garden::store::{AccountStore, NewInvite, NewToken, NewUser};
-use knowledge_garden::{AppState, router};
+use knowledge_garden::store::{AccountStore, NewInvite};
 
 #[derive(Parser)]
 #[command(version, about = "Knowledge Garden: a knowledge base for coding agents and humans")]
@@ -140,38 +140,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.files_dir = files_dir;
             config.max_attachment_bytes = max_attachment_mb.saturating_mul(1024 * 1024);
             let state = AppState::new(store, config);
-            if sync_interval_secs > 0 {
-                tokio::spawn(knowledge_garden::federation::run_sync_loop(
-                    state.clone(),
-                    std::time::Duration::from_secs(sync_interval_secs),
-                ));
-            }
-            let app = router(state);
             let listener = tokio::net::TcpListener::bind(bind).await?;
             tracing::info!("listening on {bind}");
-            axum::serve(listener, app).await?;
+            let shutdown = async {
+                let _ = tokio::signal::ctrl_c().await;
+            };
+            let sync = std::time::Duration::from_secs(sync_interval_secs);
+            knowledge_garden::server::serve(state, listener, Some(sync), shutdown).await?;
         }
         Command::CreateAdmin { username, display_name } => {
-            validate_username(&username)?;
-            let user = store
-                .create_user(NewUser {
-                    display_name: display_name.unwrap_or_else(|| username.clone()),
-                    username,
-                    role: Role::Admin,
-                })
-                .await?;
-            let secret = generate_secret(TOKEN_PREFIX);
-            let mut scopes = DEFAULT_SCOPES.to_vec();
-            scopes.push(Scope::Admin);
-            store
-                .create_token(NewToken {
-                    user_id: user.id,
-                    name: "default".into(),
-                    kind: TokenKind::Human,
-                    scopes,
-                    token_hash: hash_secret(&secret),
-                })
-                .await?;
+            let display_name = display_name.unwrap_or_else(|| username.clone());
+            let (user, secret) =
+                knowledge_garden::server::bootstrap_admin(&store, &username, &display_name, "default").await?;
             println!("created admin '{}'. token (shown once):\n{secret}", user.username);
         }
         Command::SetPassword { username } => {

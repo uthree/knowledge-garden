@@ -176,6 +176,10 @@ pub trait AccountStore: Send + Sync {
     async fn create_user(&self, user: NewUser) -> Result<User>;
     async fn find_user(&self, username: &str) -> Result<Option<User>>;
     async fn create_token(&self, token: NewToken) -> Result<Token>;
+    /// Creates the token, or when the user already has one with that name (live
+    /// or revoked), gives it the new secret, kind and scopes and makes it live again.
+    /// The old secret stops working.
+    async fn reissue_token(&self, token: NewToken) -> Result<Token>;
     async fn list_tokens(&self, user_id: &str) -> Result<Vec<Token>>;
     /// Returns false when the token does not exist or belongs to another user.
     async fn revoke_token(&self, user_id: &str, token_id: &str) -> Result<bool>;

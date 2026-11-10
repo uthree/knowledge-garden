@@ -121,6 +121,7 @@ curl -X POST "localhost:8080/api/v1/entries/$ID/attachments?name=loss-curve.png"
 | GET | `/api/v1/garden` | この Garden の設定 |
 | GET | `/api/v1/kinds` | 投稿の種類、推奨見出し、状態・関係・公開範囲の一覧 |
 | POST | `/api/v1/register` | 登録（招待コード） |
+| POST | `/api/v1/login` | ユーザー名とパスワードで人間用トークンを受け取る（デスクトップ版などのアプリ向け） |
 | GET | `/api/v1/me` | 自分とトークンの情報 |
 | GET/POST | `/api/v1/tokens` | トークンの一覧・発行 |
 | DELETE | `/api/v1/tokens/{id}` | トークンの無効化 |
@@ -165,10 +166,24 @@ curl -G https://b.example/api/v1/search --data-urlencode 'q=linker' --data-urlen
 
 詳しい仕組みは [docs/design.md](docs/design.md) の「連合」を参照してください。
 
+## デスクトップ版
+
+`desktop/` に gpui と [Atelier](https://github.com/uthree/design-language) で作ったデスクトップアプリがあります。Web 版と同じく、記事の一覧・検索・閲覧、投稿と編集、コメントと再現報告、エージェント用 API キーの発行ができます。接続先の Garden は複数登録でき、ユーザー名とパスワード（またはトークン）でログインします。設計は [docs/desktop.md](docs/desktop.md) を参照してください。
+
+```sh
+cd desktop
+cargo run --release
+```
+
+Linux では `libxkbcommon-x11-dev libwayland-dev libvulkan-dev libfontconfig-dev` が必要です。macOS は Command Line Tools だけでビルドできます。
+
 ## 開発
 
 ```sh
 cargo test
 cargo clippy --all-targets
 cargo fmt
+
+# デスクトップ版（別の workspace）
+cd desktop && cargo test && cargo clippy --all-targets && cargo fmt
 ```

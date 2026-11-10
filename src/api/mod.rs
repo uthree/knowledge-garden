@@ -21,6 +21,7 @@ pub fn rest_router(state: AppState) -> Router {
         .route("/garden", get(accounts::garden_info))
         .route("/kinds", get(entries::kinds))
         .route("/register", post(accounts::register))
+        .route("/login", post(accounts::login))
         .route("/me", get(accounts::me))
         .route("/tokens", get(accounts::list_tokens).post(accounts::create_token))
         .route("/tokens/{id}", delete(accounts::revoke_token))

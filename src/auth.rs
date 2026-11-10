@@ -66,6 +66,32 @@ pub async fn verify_password(password: String, hash: String) -> bool {
     .unwrap_or(false)
 }
 
+/// A hash of a random password, checked when the username is unknown so that
+/// the response time does not tell which usernames exist.
+pub(crate) static DUMMY_HASH: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    use argon2::password_hash::PasswordHasher;
+    argon2::Argon2::default()
+        .hash_password(generate_secret("").as_bytes())
+        .map(|h| h.to_string())
+        .unwrap_or_default()
+});
+
+/// Checks a username and password. Unknown users and users without a password
+/// take as long as a wrong password, and both give `None`.
+pub async fn check_password(
+    state: &AppState,
+    username: &str,
+    password: String,
+) -> Result<Option<crate::model::User>, Error> {
+    let found = state.store.password_login(username).await?;
+    let (user, hash) = match found {
+        Some((u, h)) => (Some(u), h),
+        None => (None, DUMMY_HASH.clone()),
+    };
+    let ok = verify_password(password, hash).await;
+    Ok(user.filter(|_| ok))
+}
+
 /// The caller, if a valid bearer token was given. An invalid token is an error,
 /// not a silent fallback to guest access.
 pub struct Viewer(pub Option<Principal>);

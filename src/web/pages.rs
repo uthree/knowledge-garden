@@ -1166,15 +1166,8 @@ pub async fn login(ctx: Ctx, Form(f): Form<LoginForm>) -> Response {
             .map_err(|_| {
                 Error::TooManyRequests("ログインの試行が多すぎます。15 分ほど待ってからもう一度試してください".into())
             })?;
-        let found = ctx.state.store.password_login(&username).await?;
-        // Verify against a dummy hash for unknown users, so timing does not reveal them.
-        let (user, hash) = match found {
-            Some((u, h)) => (Some(u), h),
-            None => (None, DUMMY_HASH.clone()),
-        };
-        let ok = verify_password(f.password.clone().unwrap_or_default(), hash).await;
-        let user = user
-            .filter(|_| ok)
+        let user = crate::auth::check_password(&ctx.state, &username, f.password.clone().unwrap_or_default())
+            .await?
             .ok_or_else(|| Error::Unauthorized("ユーザー名かパスワードが違います".into()))?;
         start_session(&ctx, &user, &next).await
     }
@@ -1201,16 +1194,6 @@ pub async fn login(ctx: Ctx, Form(f): Form<LoginForm>) -> Response {
         Err(e) => ctx.error_page(e).await,
     }
 }
-
-/// A hash of a random password, checked when the username is unknown so that
-/// the response time does not tell which usernames exist.
-static DUMMY_HASH: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    use argon2::password_hash::PasswordHasher;
-    argon2::Argon2::default()
-        .hash_password(generate_secret("").as_bytes())
-        .map(|h| h.to_string())
-        .unwrap_or_default()
-});
 
 async fn start_session(ctx: &Ctx, user: &User, next: &str) -> Result<Response> {
     let token = ctx.state.store.web_token(&user.id, &scopes_for_role(user.role)).await?;
@@ -1577,7 +1560,7 @@ pub async fn change_password(ctx: Ctx, Form(f): Form<PasswordForm>) -> Response 
             .password_login(&user.username)
             .await?
             .map(|(_, h)| h)
-            .unwrap_or_else(|| DUMMY_HASH.clone());
+            .unwrap_or_else(|| crate::auth::DUMMY_HASH.clone());
         if !verify_password(f.current.clone().unwrap_or_default(), current_hash).await {
             return Err(Error::bad_request("いまのパスワードが違います"));
         }
