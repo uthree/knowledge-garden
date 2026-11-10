@@ -8,6 +8,7 @@ use sqlx::{QueryBuilder, Sqlite, SqlitePool};
 use super::*;
 use crate::error::Error;
 
+#[derive(Clone)]
 pub struct SqliteStore {
     pool: SqlitePool,
 }
@@ -43,7 +44,18 @@ impl SqliteStore {
     /// Opens (creating if needed) the database at `url`, e.g. `sqlite://garden.db`
     /// or `sqlite::memory:`, and applies migrations.
     pub async fn connect(url: &str) -> Result<Self> {
-        let opts = SqliteConnectOptions::from_str(url)?
+        let max = if url.contains(":memory:") { 1 } else { 8 };
+        Self::connect_with(SqliteConnectOptions::from_str(url)?, max).await
+    }
+
+    /// Opens (creating if needed) the database file at `path`. Unlike [`Self::connect`],
+    /// any path works, including Windows paths and ones with spaces.
+    pub async fn open(path: &std::path::Path) -> Result<Self> {
+        Self::connect_with(SqliteConnectOptions::new().filename(path), 8).await
+    }
+
+    async fn connect_with(opts: SqliteConnectOptions, max_connections: u32) -> Result<Self> {
+        let opts = opts
             .create_if_missing(true)
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)
@@ -52,8 +64,10 @@ impl SqliteStore {
             .synchronous(SqliteSynchronous::Normal)
             .with_regexp();
         // An in-memory database exists per connection, so it must use exactly one.
-        let max = if url.contains(":memory:") { 1 } else { 8 };
-        let pool = SqlitePoolOptions::new().max_connections(max).connect_with(opts).await?;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(max_connections)
+            .connect_with(opts)
+            .await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
         Ok(Self { pool })
     }

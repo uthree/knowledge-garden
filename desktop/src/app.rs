@@ -14,13 +14,15 @@ use knowledge_garden::model::EntryKind;
 
 use crate::api::{Client, GardenInfo, Me};
 use crate::assets::APP_ICON;
+use crate::local_server::{LocalServer, ServerEvent, ServerStatus};
 use crate::pages::account::AccountPage;
 use crate::pages::browse::BrowsePage;
 use crate::pages::compose::ComposePage;
 use crate::pages::connect::ConnectPage;
 use crate::pages::entry::EntryPage;
+use crate::pages::server::ServerPage;
 use crate::runtime;
-use crate::settings::{Connection, Settings, SettingsStore};
+use crate::settings::{Connection, ConnectionKind, LOCAL_CONNECTION_ID, LocalServerSettings, Settings, SettingsStore};
 use crate::widgets::{kind_icon, kind_label};
 
 actions!(garden, [NewEntry, FocusSearch, Back, Reload]);
@@ -99,6 +101,18 @@ pub enum Nav {
     Status(SharedString, Tone),
     /// Settings changed on a page (appearance); save and apply them.
     SettingsChanged(Settings),
+    /// The local server's settings changed; save them (they apply on the next start).
+    LocalChanged(LocalServerSettings),
+    Server(ServerAction),
+    /// Open the settings page (to issue an agent API key).
+    Account,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ServerAction {
+    Start,
+    Stop,
+    Restart,
 }
 
 #[derive(Clone)]
@@ -108,6 +122,7 @@ enum Page {
     Compose(Entity<ComposePage>),
     Connect,
     Account,
+    Server,
 }
 
 pub struct GardenApp {
@@ -122,6 +137,10 @@ pub struct GardenApp {
     browse: Option<Entity<BrowsePage>>,
     connect: Entity<ConnectPage>,
     account: Option<Entity<AccountPage>>,
+    server: Entity<LocalServer>,
+    server_page: Option<Entity<ServerPage>>,
+    /// Switch to the local Garden once its server is up.
+    open_when_started: bool,
     status: Option<(SharedString, Tone)>,
     switcher_open: bool,
     /// Holds keyboard focus under the title bar, so the window's shortcuts work before
@@ -137,6 +156,11 @@ impl GardenApp {
         subscriptions.push(cx.observe_window_appearance(window, |this, window, cx| {
             this.apply_theme(window, cx);
         }));
+        let server = cx.new(LocalServer::new);
+        subscriptions.push(cx.subscribe_in(&server, window, Self::on_server));
+        subscriptions.push(cx.observe(&server, |_, _, cx| cx.notify()));
+        // Quitting stops the server, finishing the requests in flight.
+        subscriptions.push(cx.on_app_quit(|this, cx| this.server.update(cx, |s, cx| s.stop(cx))));
         let mut app = Self {
             store,
             settings,
@@ -147,16 +171,143 @@ impl GardenApp {
             browse: None,
             connect,
             account: None,
+            server,
+            server_page: None,
+            open_when_started: false,
             status: None,
             switcher_open: false,
             focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         };
         app.focus.focus(window);
+        if app.settings.local.autostart && app.settings.local_connection().is_some() {
+            app.start_server(cx);
+        }
         if let Some(connection) = app.settings.current().cloned() {
             app.open_connection(connection, window, cx);
         }
         app
+    }
+
+    /// The admin the app signs in to the local Garden as, and whether it still has a token.
+    fn local_access(&self) -> (Option<String>, bool) {
+        match self.settings.local_connection() {
+            Some(c) => (c.username.clone(), self.store.token(&c.id).is_none()),
+            None => (None, true),
+        }
+    }
+
+    fn start_server(&mut self, cx: &mut Context<Self>) {
+        // Entry URIs are built from the base URL: fix it at the first start, so a later change
+        // of port does not change them.
+        if self.settings.local.base_url.is_none() {
+            self.settings.local.base_url = Some(self.settings.local.base_url());
+            self.save_settings(cx);
+        }
+        let (username, need_token) = self.local_access();
+        let local = self.settings.local.clone();
+        self.server.update(cx, |s, cx| s.start(local, username, need_token, cx));
+    }
+
+    fn server_action(&mut self, action: ServerAction, cx: &mut Context<Self>) {
+        match action {
+            ServerAction::Start => {
+                // Show the local Garden once it is up, unless the person is reading another.
+                let first = self.settings.local_connection().is_none();
+                let here = self
+                    .session
+                    .as_ref()
+                    .is_none_or(|s| s.connection.kind == ConnectionKind::Local);
+                self.open_when_started = first || here;
+                self.start_server(cx);
+            }
+            ServerAction::Stop => self.server.update(cx, |s, cx| s.stop(cx)).detach(),
+            ServerAction::Restart => {
+                let (username, need_token) = self.local_access();
+                let local = self.settings.local.clone();
+                self.open_when_started = self
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.connection.kind == ConnectionKind::Local);
+                self.server
+                    .update(cx, |s, cx| s.restart(local, username, need_token, cx));
+            }
+        }
+    }
+
+    fn on_server(&mut self, _: &Entity<LocalServer>, event: &ServerEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event.clone() {
+            ServerEvent::Started { access } => {
+                // Keep the local connection in step with the server: its address, and the new
+                // token when one was issued.
+                let previous = self.settings.current.clone();
+                let existing = self.settings.local_connection().cloned();
+                let connection = Connection {
+                    id: existing
+                        .as_ref()
+                        .map(|c| c.id.clone())
+                        .unwrap_or_else(|| LOCAL_CONNECTION_ID.into()),
+                    name: self.settings.local.name.clone(),
+                    base_url: self.settings.local.client_url(),
+                    kind: ConnectionKind::Local,
+                    username: access
+                        .as_ref()
+                        .map(|a| a.username.clone())
+                        .or_else(|| existing.as_ref().and_then(|c| c.username.clone())),
+                };
+                if let Some(access) = &access
+                    && let Err(e) = self.store.set_token(&connection.id, Some(&access.secret))
+                {
+                    self.status = Some((format!("トークンを保存できませんでした: {e}").into(), Tone::Danger));
+                }
+                self.settings.upsert(connection.clone());
+                if previous.is_some() {
+                    self.settings.current = previous;
+                }
+                self.save_settings(cx);
+                self.connect
+                    .update(cx, |c, cx| c.set_settings(self.settings.clone(), cx));
+                self.refresh_server_page(cx);
+                self.status = Some(("このコンピューターのサーバーが起動しました".into(), Tone::Success));
+                if std::mem::take(&mut self.open_when_started) {
+                    self.open_connection(connection, window, cx);
+                }
+            }
+            ServerEvent::Failed(message) => {
+                self.status = Some((message.into(), Tone::Danger));
+                if std::mem::take(&mut self.open_when_started) {
+                    self.connecting = false;
+                    self.server_page(window, cx);
+                }
+                cx.notify();
+            }
+            ServerEvent::Stopped => {
+                self.status = Some(("このコンピューターのサーバーを止めました".into(), Tone::Neutral));
+                cx.notify();
+            }
+        }
+    }
+
+    fn refresh_server_page(&mut self, cx: &mut Context<Self>) {
+        if let Some(page) = &self.server_page {
+            let local = self.settings.local.clone();
+            let username = self.settings.local_connection().and_then(|c| c.username.clone());
+            page.update(cx, |p, cx| p.update_from(local, username, cx));
+        }
+    }
+
+    fn server_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.server_page.is_none() {
+            let server = self.server.clone();
+            let local = self.settings.local.clone();
+            let username = self.settings.local_connection().and_then(|c| c.username.clone());
+            let page = cx.new(|cx| ServerPage::new(server, local, username, window, cx));
+            self._subscriptions.push(cx.subscribe_in(&page, window, Self::on_nav));
+            self.server_page = Some(page);
+        }
+        if !matches!(self.page, Page::Server) {
+            self.go(Page::Server, cx);
+        }
     }
 
     fn apply_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -183,6 +334,15 @@ impl GardenApp {
         self.save_settings(cx);
         self.connecting = true;
         self.switcher_open = false;
+        // The local Garden answers only while its server runs: start it, and come back here.
+        if connection.kind == ConnectionKind::Local && !self.server.read(cx).is_running() {
+            self.open_when_started = true;
+            if !self.server.read(cx).is_busy() {
+                self.start_server(cx);
+            }
+            cx.notify();
+            return;
+        }
         let token = self.store.token(&connection.id);
         let client = Client::new(&connection.base_url, token);
         cx.notify();
@@ -342,6 +502,13 @@ impl GardenApp {
                 self.status = Some((message, tone));
                 cx.notify();
             }
+            Nav::LocalChanged(local) => {
+                self.settings.local = local;
+                self.save_settings(cx);
+                cx.notify();
+            }
+            Nav::Server(action) => self.server_action(action, cx),
+            Nav::Account => self.account_page(window, cx),
             Nav::SettingsChanged(settings) => {
                 self.settings = settings;
                 self.save_settings(cx);
@@ -359,6 +526,7 @@ impl GardenApp {
                 | (Page::Compose(_), "compose")
                 | (Page::Connect, "connect")
                 | (Page::Account, "account")
+                | (Page::Server, "server")
         )
     }
 
@@ -410,6 +578,20 @@ impl GardenApp {
                     .on_click(cx.listener(|this, _, window, cx| this.compose(None, window, cx))),
             )
             .child(div().flex_1())
+            .child(
+                ListItem::new("nav-server", "サーバー")
+                    .icon(IconName::Sliders)
+                    .selected(self.is_page("server"))
+                    .trailing(match self.server.read(cx).status() {
+                        ServerStatus::Running { .. } => {
+                            Badge::new("稼働中").tone(Tone::Success).dot().into_any_element()
+                        }
+                        ServerStatus::Starting => Badge::new("起動中").tone(Tone::Accent).into_any_element(),
+                        ServerStatus::Failed(_) => Badge::new("エラー").tone(Tone::Danger).into_any_element(),
+                        _ => div().into_any_element(),
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| this.server_page(window, cx))),
+            )
             .child(
                 ListItem::new("nav-connect", "接続先")
                     .icon(IconName::Folder)
@@ -495,6 +677,10 @@ impl Render for GardenApp {
             Page::Connect => self.connect.clone().into_any_element(),
             Page::Account => match &self.account {
                 Some(a) => a.clone().into_any_element(),
+                None => self.connect.clone().into_any_element(),
+            },
+            Page::Server => match &self.server_page {
+                Some(p) => p.clone().into_any_element(),
                 None => self.connect.clone().into_any_element(),
             },
         };

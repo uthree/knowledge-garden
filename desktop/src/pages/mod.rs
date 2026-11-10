@@ -5,3 +5,4 @@ pub mod browse;
 pub mod compose;
 pub mod connect;
 pub mod entry;
+pub mod server;
