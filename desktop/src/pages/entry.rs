@@ -86,6 +86,11 @@ impl EntryPage {
         &self.id
     }
 
+    /// The entry as shown, once loaded.
+    pub fn entry(&self) -> Option<&Entry> {
+        self.entry.as_ref()
+    }
+
     pub fn reload(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         let client = self.session.client.clone();
         let id = self.id.clone();
@@ -108,6 +113,7 @@ impl EntryPage {
                 this.versions = versions.unwrap_or_default();
                 this.links = links.ok();
                 this.comments = comments.unwrap_or_default();
+                cx.emit(Nav::EntryLoaded);
                 cx.notify();
             })
             .ok();

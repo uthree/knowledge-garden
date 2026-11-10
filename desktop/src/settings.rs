@@ -103,6 +103,93 @@ impl LocalServerSettings {
     }
 }
 
+/// A coding-agent CLI the agent panel can run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CliAgent {
+    ClaudeCode,
+    Codex,
+    OpenCode,
+    Antigravity,
+}
+
+/// Where the agent panel's answers come from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentBackend {
+    /// A coding-agent CLI on this computer, signed in on its own.
+    Cli {
+        agent: CliAgent,
+        /// The CLI's default when unset.
+        #[serde(default)]
+        model: Option<String>,
+    },
+    /// Any server speaking OpenAI's chat completions: OpenAI, Ollama, LM Studio, ...
+    OpenAi {
+        name: String,
+        base_url: String,
+        /// The environment variable holding the API key; none for a local server.
+        #[serde(default)]
+        api_key_env: Option<String>,
+        model: String,
+    },
+    /// Anthropic's Messages API.
+    Anthropic {
+        base_url: String,
+        api_key_env: String,
+        model: String,
+    },
+}
+
+impl AgentBackend {
+    /// The backends offered before the person changes anything.
+    pub fn defaults() -> Vec<Self> {
+        let cli = |agent| Self::Cli { agent, model: None };
+        vec![
+            cli(CliAgent::ClaudeCode),
+            cli(CliAgent::Codex),
+            cli(CliAgent::OpenCode),
+            cli(CliAgent::Antigravity),
+            Self::Anthropic {
+                base_url: "https://api.anthropic.com".into(),
+                api_key_env: "ANTHROPIC_API_KEY".into(),
+                model: "claude-opus-5-5".into(),
+            },
+            Self::OpenAi {
+                name: "OpenAI".into(),
+                base_url: "https://api.openai.com/v1".into(),
+                api_key_env: Some("OPENAI_API_KEY".into()),
+                model: "gpt-5".into(),
+            },
+            Self::OpenAi {
+                name: "Ollama".into(),
+                base_url: "http://localhost:11434/v1".into(),
+                api_key_env: None,
+                model: "llama3.2".into(),
+            },
+        ]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSettings {
+    pub backends: Vec<AgentBackend>,
+    /// The index of the backend in use.
+    pub selected: usize,
+    pub panel_open: bool,
+}
+
+impl Default for AgentSettings {
+    fn default() -> Self {
+        Self {
+            backends: AgentBackend::defaults(),
+            selected: 0,
+            panel_open: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionKind {
@@ -147,6 +234,7 @@ pub struct Settings {
     /// Atelier's direction: `glass` (the adopted one), `studio` or `mono`.
     pub direction: String,
     pub local: LocalServerSettings,
+    pub agent: AgentSettings,
 }
 
 impl Default for Settings {
@@ -157,6 +245,7 @@ impl Default for Settings {
             appearance: AppearanceChoice::System,
             direction: "glass".into(),
             local: LocalServerSettings::default(),
+            agent: AgentSettings::default(),
         }
     }
 }
