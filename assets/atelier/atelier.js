@@ -51,6 +51,9 @@ export function icon(name, { size } = {}) {
 /// segmented controls and tabs select on click and with the arrow keys, keep slider fills in
 /// step with their values, and draw and turn knobs. Safe to call again on the same subtree.
 export function hydrate(root = document) {
+  for (const element of root.querySelectorAll("[data-shortcut]")) {
+    shortcutTooltip(element, element.dataset.tooltip || element.textContent.trim(), element.dataset.shortcut);
+  }
   for (const element of root.querySelectorAll("[data-icon]")) {
     if (element.dataset.iconDrawn === element.dataset.icon) continue;
     element.classList.add("at-icon");
@@ -282,6 +285,460 @@ function element(tag, className, text) {
   return node;
 }
 
+// ---------------------------------------------------------------- shortcuts in tooltips
+
+const MAC = /Mac|iPhone|iPad/.test(globalThis.navigator?.platform || "");
+// The stylesheet leaves out what macOS does not draw, such as the title bar's app icon.
+if (MAC && globalThis.document) document.documentElement.dataset.platform = "mac";
+
+/// A key binding as the platform writes it, the counterpart of `binding_label`: gpui's
+/// notation in ("secondary-shift-s", "ctrl-k ctrl-s"), "⇧⌘S" on macOS and "Ctrl+Shift+S"
+/// elsewhere out. `secondary` is ⌘ on macOS and Ctrl elsewhere.
+export function shortcutLabel(binding) {
+  const names = { space: "Space", enter: "Enter", escape: "Esc", backspace: "Backspace", delete: "Delete", tab: "Tab", home: "Home", end: "End", pageup: "Page Up", pagedown: "Page Down", left: "←", right: "→", up: "↑", down: "↓" };
+  return binding
+    .trim()
+    .split(/\s+/)
+    .map((stroke) => {
+      const parts = stroke.split("-");
+      let key = parts.pop() || "-";
+      key = names[key] || key.charAt(0).toUpperCase() + key.slice(1);
+      const held = new Set(parts.map((part) => (part === "secondary" ? (MAC ? "cmd" : "ctrl") : part)));
+      if (MAC) {
+        return [["ctrl", "⌃"], ["alt", "⌥"], ["shift", "⇧"], ["cmd", "⌘"]].filter(([name]) => held.has(name)).map(([, mark]) => mark).join("") + key;
+      }
+      return [["ctrl", "Ctrl"], ["alt", "Alt"], ["shift", "Shift"], ["cmd", "Super"]].filter(([name]) => held.has(name)).map(([, word]) => word).concat(key).join("+");
+    })
+    .join(" ");
+}
+
+/// Give `element` a tooltip that names its keys, faint after the words, as `Button::shortcut`
+/// does. `keys` is gpui's notation ("secondary-d") or already written ("⌘D"); empty shows
+/// none. `hydrate()` does this for every `[data-shortcut]`, using `data-tooltip` or the
+/// element's own text for the words.
+export function shortcutTooltip(target, words, keys) {
+  target.querySelector(":scope > .at-tooltip")?.remove();
+  const notation = /^[a-z0-9,.;/'=`[\]-]+( [a-z0-9,.;/'=`[\]-]+)*$/;
+  const written = keys && notation.test(keys) ? shortcutLabel(keys) : keys || "";
+  const tip = element("span", "at-tooltip", words);
+  if (written) {
+    tip.append(element("span", "at-tooltip__keys", written));
+    target.setAttribute("aria-keyshortcuts", written);
+  }
+  tip.setAttribute("aria-hidden", "true");
+  target.classList.add("at-has-tooltip");
+  delete target.dataset.tooltip;
+  target.append(tip);
+}
+
+// ---------------------------------------------------------------- level meters
+
+/// Where a level in dBFS sits on a meter, the counterpart of `LevelMeter::position`: 0 at the
+/// floor of −60 dB and below, 0.7 at −6 dB where green turns yellow, 0.9 at full scale where
+/// yellow turns red, 1 at +6 dB.
+export function meterPosition(db) {
+  const scale = [[-60, 0], [-6, 0.7], [0, 0.9], [6, 1]];
+  if (Number.isNaN(db) || db <= scale[0][0]) return 0;
+  db = Math.min(db, scale[3][0]);
+  for (let index = 1; index < scale.length; index++) {
+    const [lowDb, low] = scale[index - 1];
+    const [highDb, high] = scale[index];
+    if (db <= highDb) return low + ((db - lowDb) / (highDb - lowDb)) * (high - low);
+  }
+  return 1;
+}
+
+/// Set an `.at-meter`'s level and peak (positions from 0 to 1; pass `meterPosition(db)` for dB)
+/// and its clip light. Leave `peak` out for none.
+export function setMeter(meter, { level = 0, peak, clipped = false } = {}) {
+  meter.style.setProperty("--level", Math.min(Math.max(level, 0), 1));
+  let mark = meter.querySelector(".at-meter__peak");
+  if (peak == null || peak <= 0.001) mark?.remove();
+  else {
+    if (!mark) meter.append((mark = element("span", "at-meter__peak")));
+    meter.style.setProperty("--peak", Math.min(peak, 1));
+  }
+  meter.toggleAttribute("data-clipped", clipped);
+}
+
+// ---------------------------------------------------------------- following a playhead
+
+/// Whether a view that plays follows its playhead, the counterpart of `Follow`. Call
+/// `update(offset, span, at, playing)` each frame with where the view starts, how much it shows
+/// and where the playhead is (one unit for all three); it returns an offset to scroll to when a
+/// page turn is due, otherwise `null`. Scrolling away while it plays lets go until the playhead
+/// is back in view, playback starts again or `engage()` is called; a change of span is a zoom
+/// and keeps following. `side(offset, span, at)` is `"before"` or `"after"` while let go and
+/// out of view, for a `.at-back-to-playhead` button with that `data-side`.
+/// A colour code read back: six hex digits or the three-digit short form, with or without
+/// `#`, in either case. `parseHex(" 38f ")` is `"#3388FF"`; anything else is `null`. As
+/// `atelier::parse_hex`.
+export function parseHex(text) {
+  const digits = String(text).trim().replace(/^#/, "");
+  if (/^[0-9a-f]{6}$/i.test(digits)) return `#${digits.toUpperCase()}`;
+  if (/^[0-9a-f]{3}$/i.test(digits)) return `#${[...digits].map((digit) => digit + digit).join("").toUpperCase()}`;
+  return null;
+}
+
+/// `#RRGGBB` as hue (degrees), saturation and value (0–1), as `atelier::Hsv`.
+function hsvOf(code) {
+  const number = parseInt(code.slice(1), 16);
+  const [r, g, b] = [16, 8, 0].map((shift) => ((number >> shift) & 255) / 255);
+  const max = Math.max(r, g, b);
+  const chroma = max - Math.min(r, g, b);
+  let hue = 0;
+  if (chroma > 0) {
+    if (max === r) hue = 60 * ((((g - b) / chroma) % 6) + 6) % 360;
+    else if (max === g) hue = 60 * ((b - r) / chroma + 2);
+    else hue = 60 * ((r - g) / chroma + 4);
+  }
+  return { hue, saturation: max ? chroma / max : 0, value: max };
+}
+
+function codeOf({ hue, saturation, value }) {
+  const sector = ((hue % 360) + 360) % 360 / 60;
+  const chroma = value * saturation;
+  const x = chroma * (1 - Math.abs((sector % 2) - 1));
+  const [r, g, b] = [[chroma, x, 0], [x, chroma, 0], [0, chroma, x], [0, x, chroma], [x, 0, chroma], [chroma, 0, x]][Math.min(5, Math.floor(sector))];
+  const m = value - chroma;
+  return `#${[r, g, b].map((channel) => Math.round((channel + m) * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+}
+
+/// `ColorSwatch`: a button showing `color`, its code (after `label`, if given) in its title.
+/// Toggle `aria-pressed` for the one in use.
+export function colorSwatch(color, { label, pressed = false } = {}) {
+  const swatch = element("button", "at-swatch");
+  swatch.type = "button";
+  swatch.style.setProperty("--_color", color);
+  const code = parseHex(color) ?? color;
+  swatch.title = label ? `${label} · ${code}` : code;
+  swatch.setAttribute("aria-label", swatch.title);
+  swatch.setAttribute("aria-pressed", String(pressed));
+  return swatch;
+}
+
+/// `ColorPicker` in `root`: the colour and its code (typed, then Return), hue, saturation and
+/// brightness sliders filled with what they make, and `presets` as swatches. Each change fires
+/// `atelier:color` with `{ value: "#RRGGBB" }`. The hue is kept while the colour passes through
+/// grey. Returns `{ value, set(code) }`.
+export function colorPicker(root, { value = "#3D7BFF", presets = [], labels = {} } = {}) {
+  const words = { hue: "Hue", saturation: "Saturation", brightness: "Brightness", invalid: "Not a colour code", code: "Colour code", ...labels };
+  let hsv = hsvOf(parseHex(value) ?? "#000000");
+  root.classList.add("at-color-picker");
+  root.replaceChildren();
+  const head = element("div", "at-color-picker__head");
+  const preview = element("span", "at-color-picker__preview");
+  const field = element("label", "at-field");
+  const code = document.createElement("input");
+  code.spellcheck = false;
+  code.setAttribute("aria-label", words.code);
+  field.append(code);
+  const error = element("span", "at-color-picker__error", words.invalid);
+  error.hidden = true;
+  head.append(preview, field, error);
+  root.append(head);
+  const channels = [
+    ["hue", words.hue, 360, (v) => `${Math.round(v)}°`],
+    ["saturation", words.saturation, 1, (v) => `${Math.round(v * 100)}%`],
+    ["value", words.brightness, 1, (v) => `${Math.round(v * 100)}%`],
+  ];
+  const sliders = channels.map(([key, caption, span, format]) => {
+    const row = element("label", "at-color-picker__row");
+    const slider = document.createElement("input");
+    slider.className = "at-slider";
+    slider.type = "range";
+    slider.min = "0";
+    slider.max = "1";
+    slider.step = key === "hue" ? String(1 / 360) : "0.01";
+    const readout = element("span");
+    row.append(element("span", "", caption), slider, readout);
+    root.append(row);
+    slider.addEventListener("input", () => {
+      // The hue stops just short of 360° at the end of its track, so the thumb stays there.
+      hsv = { ...hsv, [key]: key === "hue" ? Math.min(Number(slider.value) * span, 359.99) : Number(slider.value) };
+      draw(true);
+    });
+    return { key, span, format, slider, readout };
+  });
+  const row = element("div", "at-color-picker__presets");
+  const swatches = presets.map((preset) => {
+    const swatch = colorSwatch(preset);
+    swatch.addEventListener("click", () => {
+      hsv = hsvOf(parseHex(preset));
+      draw(true);
+    });
+    row.append(swatch);
+    return [parseHex(preset), swatch];
+  });
+  if (swatches.length) root.append(row);
+
+  function draw(changed) {
+    const current = codeOf(hsv);
+    preview.style.setProperty("--_color", current);
+    if (document.activeElement !== code) code.value = current;
+    error.hidden = true;
+    for (const { key, span, format, slider, readout } of sliders) {
+      slider.value = String(hsv[key] / span);
+      const fill = key === "hue" ? codeOf({ hue: hsv.hue, saturation: 1, value: 1 }) : current;
+      slider.style.setProperty("--at-slider-fill", fill);
+      slider.style.setProperty("--_value", `${(hsv[key] / span) * 100}%`);
+      readout.textContent = format(hsv[key]);
+    }
+    for (const [preset, swatch] of swatches) swatch.setAttribute("aria-pressed", String(preset === current));
+    if (changed) root.dispatchEvent(new CustomEvent("atelier:color", { bubbles: true, detail: { value: current } }));
+  }
+  code.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      const typed = parseHex(code.value);
+      if (!typed) {
+        error.hidden = false;
+        return;
+      }
+      code.value = typed;
+      if (typed !== codeOf(hsv)) {
+        hsv = hsvOf(typed);
+        draw(true);
+      }
+    } else if (event.key === "Escape") {
+      code.value = codeOf(hsv);
+      error.hidden = true;
+    }
+  });
+  code.addEventListener("blur", () => {
+    code.value = codeOf(hsv);
+  });
+  draw(false);
+  return {
+    get value() {
+      return codeOf(hsv);
+    },
+    set(next) {
+      const typed = parseHex(next);
+      if (typed && typed !== codeOf(hsv)) hsv = hsvOf(typed);
+      draw(false);
+    },
+  };
+}
+
+export function follow() {
+  let released = false;
+  let last = null;
+  let wasPlaying = false;
+  const page = (span, at) => Math.max(0, at - span * 0.05);
+  return {
+    page,
+    engage() {
+      released = false;
+    },
+    release() {
+      released = true;
+    },
+    get released() {
+      return released;
+    },
+    update(offset, span, at, playing) {
+      if (playing && !wasPlaying) released = false;
+      wasPlaying = playing;
+      if (!playing) {
+        last = null;
+        return null;
+      }
+      const before = last;
+      last = [offset, span];
+      if (at >= offset && at < offset + span) {
+        released = false;
+        return null;
+      }
+      if (before && before[0] !== offset && before[1] === span) released = true;
+      if (released) return null;
+      last = null;
+      return page(span, at);
+    },
+    side(offset, span, at) {
+      if (!released) return null;
+      if (at < offset) return "before";
+      if (at >= offset + span) return "after";
+      return null;
+    },
+  };
+}
+
+// ---------------------------------------------------------------- table
+
+/// A table of short values, the counterpart of `Table`. `columns` are `{ title, width, grow,
+/// end, mono }` (a `width` in pixels fixes the column, otherwise it takes `grow` shares of what
+/// is left); `rows` are `{ cells, mark, tinted, active, faint, selected }`, where `mark` is a
+/// category number (`--at-category-N`), `"accent"` or `"agent"`.
+///
+/// A click selects a row (`atelier:row-select` with `{ index }`); a double-click on a cell, or
+/// Enter on the selected row, asks for it to be edited (`atelier:cell-activate` with `{ row,
+/// column, element }`, column 0 for Enter): open `inlineEdit(element, …)` over it. While the
+/// table has focus, Up, Down, Home and End move the selection and keep it in view. Returns
+/// `{ update(rows), select(index), cell(row, column) }`.
+export function table(root, { columns = [], rows = [], empty = "" } = {}) {
+  root.classList.add("at-table");
+  root.tabIndex = 0;
+  root.replaceChildren();
+  const head = element("div", "at-table__head");
+  const body = element("div", "at-table__body");
+  const sizeCell = (cell, column) => {
+    cell.className = `at-table__cell${column.end ? " at-table__cell--end" : ""}${column.mono ? " at-table__cell--mono" : ""}`;
+    if (column.width) cell.style.flex = `0 0 ${column.width}px`;
+    else if (column.grow) cell.style.flexGrow = String(column.grow);
+    return cell;
+  };
+  for (const column of columns) head.append(sizeCell(element("span", "", column.title), column));
+  root.append(head, body);
+  let current = rows;
+  const markColor = (mark) =>
+    mark === "accent" ? "var(--at-accent)" : mark === "agent" ? "var(--at-agent)" : `var(--at-category-${mark % 8})`;
+  const draw = () => {
+    root.classList.toggle("at-table--marked", current.some((row) => row.mark != null));
+    body.replaceChildren();
+    if (!current.length && empty) body.append(element("div", "at-small at-faint", empty));
+    current.forEach((row, index) => {
+      const line = element("div", "at-table__row");
+      line.setAttribute("aria-selected", String(Boolean(row.selected)));
+      if (row.active) line.dataset.active = "";
+      if (row.faint) line.dataset.faint = "";
+      if (row.tinted) line.dataset.tinted = "";
+      if (row.mark != null) line.style.setProperty("--_mark", markColor(row.mark));
+      columns.forEach((column, columnIndex) => {
+        const cell = sizeCell(element("span", "", row.cells[columnIndex] ?? ""), column);
+        cell.dataset.row = String(index);
+        cell.dataset.column = String(columnIndex);
+        line.append(cell);
+      });
+      body.append(line);
+    });
+  };
+  const cellAt = (row, column) => body.children[row]?.children[column];
+  const selectedIndex = () => current.findIndex((row) => row.selected);
+  const select = (index) => {
+    if (!current.length) return;
+    const to = Math.max(0, Math.min(index, current.length - 1));
+    current = current.map((row, at) => ({ ...row, selected: at === to }));
+    draw();
+    body.children[to]?.scrollIntoView({ block: "nearest" });
+    root.dispatchEvent(new CustomEvent("atelier:row-select", { bubbles: true, detail: { index: to } }));
+  };
+  const activate = (row, column) =>
+    root.dispatchEvent(
+      new CustomEvent("atelier:cell-activate", { bubbles: true, detail: { row, column, element: cellAt(row, column) } }),
+    );
+  body.addEventListener("mousedown", (event) => {
+    const cell = event.target.closest(".at-table__cell");
+    if (!cell) return;
+    const row = Number(cell.dataset.row);
+    if (event.detail >= 2) {
+      // Keep the press from focusing the table over the field that opens.
+      event.preventDefault();
+      activate(row, Number(cell.dataset.column));
+    }
+    else if (selectedIndex() !== row) select(row);
+  });
+  root.addEventListener("keydown", (event) => {
+    if (event.target !== root) return;
+    const at = selectedIndex();
+    const to = { ArrowUp: at < 0 ? current.length - 1 : at - 1, ArrowDown: at + 1, Home: 0, End: current.length - 1 }[event.key];
+    if (to !== undefined) {
+      select(to);
+      event.preventDefault();
+    } else if (event.key === "Enter" && at >= 0) {
+      activate(at, 0);
+      event.preventDefault();
+    }
+  });
+  draw();
+  return {
+    update(rows) {
+      current = rows;
+      draw();
+    },
+    select,
+    cell: cellAt,
+  };
+}
+
+// ---------------------------------------------------------------- inline edit
+
+/// Edit `target`'s text where it is shown, the counterpart of `InlineEdit`: a field opens over
+/// the label, about its size (at least `minWidth`, at most `maxWidth` pixels wide), with the
+/// text selected so the first key replaces it. Return commits and Escape closes; a press
+/// anywhere else commits too, unless the text is unchanged, or emptied where `allowEmpty` is not
+/// set, which closes it. A `multiline` field is an area where Shift-Return breaks the line.
+///
+/// `onCommit(text)` may return a message to refuse the edit: the field stays open and shows it.
+/// The target also receives `atelier:inline-commit` (`detail.value`) and `atelier:inline-close`.
+/// Returns `{ field, input, close }`.
+export function inlineEdit(
+  target,
+  { value, multiline = false, allowEmpty = false, minWidth = 150, maxWidth = 420, onCommit, onClose } = {},
+) {
+  const original = value ?? target.textContent.trim();
+  const previous = document.activeElement;
+  const rect = target.getBoundingClientRect();
+  const field = element("span", `at-field at-inline-edit${multiline ? " at-field--area" : ""}`);
+  const input = document.createElement(multiline ? "textarea" : "input");
+  input.value = original;
+  if (multiline) input.rows = Math.min(Math.max(original.split("\n").length, 2), 6);
+  field.append(input);
+  const width = Math.min(Math.max(rect.width + 8, minWidth), maxWidth);
+  const left = Math.max(8, Math.min(rect.left - 4, window.innerWidth - width - 8));
+  field.style.width = `${width}px`;
+  field.style.left = `${left}px`;
+  (target.closest(".at-root") || document.body).append(field);
+  // Centred on a one-line label; an area opens downward from the label's top.
+  const height = field.getBoundingClientRect().height;
+  field.style.top = `${multiline ? rect.top : rect.top + (rect.height - height) / 2}px`;
+  input.focus();
+  input.select();
+
+  let done = false;
+  let error = null;
+  const finish = (commit) => {
+    if (done) return;
+    const text = input.value;
+    if (commit && text !== original && (allowEmpty || text.trim())) {
+      const refusal = onCommit?.(text);
+      if (typeof refusal === "string" && refusal) {
+        error ??= field.appendChild(element("span", "at-inline-edit__error"));
+        error.textContent = refusal;
+        input.focus();
+        return;
+      }
+      target.dispatchEvent(new CustomEvent("atelier:inline-commit", { bubbles: true, detail: { value: text } }));
+    } else {
+      onClose?.();
+      target.dispatchEvent(new CustomEvent("atelier:inline-close", { bubbles: true }));
+    }
+    done = true;
+    document.removeEventListener("pointerdown", outside, true);
+    field.remove();
+    if (previous instanceof HTMLElement && document.contains(previous)) previous.focus();
+  };
+  const outside = (event) => {
+    if (!field.contains(event.target)) finish(true);
+  };
+  document.addEventListener("pointerdown", outside, true);
+  input.addEventListener("keydown", (event) => {
+    // While an input method composes, Return and Escape are its own.
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key === "Enter" && !(multiline && event.shiftKey)) {
+      event.preventDefault();
+      finish(true);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      finish(false);
+    }
+  });
+  input.addEventListener("input", () => {
+    if (multiline) input.rows = Math.min(Math.max(input.value.split("\n").length, 2), 6);
+  });
+  return { field, input, close: () => finish(false) };
+}
+
 // ---------------------------------------------------------------- Markdown
 
 /// Links that may be followed: the web, mail, and the page's own paths. Anything else, such as
@@ -489,14 +946,18 @@ function copyButton(text, strings) {
 /// `atelier:decided` with `{ id, decision }` ("allow", "alwaysAllow" or "deny") when an approval
 /// is answered.
 ///
-/// Entries are plain objects with a `kind`: `user` (`text`, `attachments`), `assistant` (`text`,
+/// With `{ openAttachments: true }` a user entry's attachment chips are buttons that fire
+/// `atelier:open-attachment` with `{ id, index, label }`, as `ChatView::open_attachments` does.
+///
+/// Entries are plain objects with a `kind`: `user` (`text`, `attachments`: labels, or `{ label,
+/// icon }` for another kind than a file), `assistant` (`text`,
 /// `meta`, `streaming`), `reasoning` (`summary`, `text`), `tool` (`name`, `summary`, `state`:
 /// "running" | "succeeded" | "failed" | "awaiting", `detail`, `icon`), `approval` (`title`,
 /// `body`, `allowLabel`, `destructive`, `offerAlways`), `choices` (`question`, `options`,
 /// `multiple`; answering fires `atelier:chose` with `{ id, picked }`, and a message sent after
 /// it closes it), `status`, `error` (`text`) or `custom` (`element`). Answers are drawn as
 /// Markdown. `{ panel: true }` fits it to a side panel; without, it is a centred column.
-export function chat(root, { panel = false, logo = null, strings = {} } = {}) {
+export function chat(root, { panel = false, logo = null, strings = {}, openAttachments = false } = {}) {
   const words = { ...CHAT_STRINGS, ...strings };
   root.classList.add("at-chat");
   root.classList.toggle("at-chat--panel", panel);
@@ -562,11 +1023,18 @@ export function chat(root, { panel = false, logo = null, strings = {} } = {}) {
     switch (entry.kind) {
       case "user": {
         const node = element("div", "at-message at-message--user");
-        for (const label of entry.attachments || []) {
-          const chip = element("span", "at-context-chip");
-          chip.append(icon("file"), label);
+        (entry.attachments || []).forEach((attachment, index) => {
+          const { label, icon: kind = "file" } = typeof attachment === "string" ? { label: attachment } : attachment;
+          const chip = element(openAttachments ? "button" : "span", "at-context-chip");
+          chip.append(icon(kind), label);
+          if (openAttachments) {
+            chip.type = "button";
+            chip.addEventListener("click", () =>
+              root.dispatchEvent(new CustomEvent("atelier:open-attachment", { bubbles: true, detail: { id: entry.id, index, label } })),
+            );
+          }
           node.append(chip);
-        }
+        });
         const actions = element("div", "at-message__actions");
         actions.append(copyButton(() => entry.text, words));
         node.append(element("div", "at-user-message", entry.text), actions);
@@ -1079,16 +1547,22 @@ export function changedFiles(root, { title = "Changed files", files = [], action
 
 /// `graph::NodeCanvas`: a node graph on a pannable canvas in `root` (give it a height).
 ///
-/// Each node is `{ title, icon, x, y, width, inputs, outputs, fields, state, progress, seconds,
-/// byAgent }`: ports are `{ name, kind }` with `kind` an index into `portTypes` (it picks the
+/// Each node is `{ title, icon, x, y, width, inputs, outputs, fields, comments, state, progress,
+/// seconds, byAgent }`: ports are `{ name, kind }` with `kind` an index into `portTypes` (it picks the
 /// port colour), fields are `{ type: "number" | "choice" | "text", name, value, fraction }`,
 /// and `state` is idle, queued, running (with `progress` 0–1), done (with `seconds`), cached or
-/// failed. Wires are `{ from, output, to, input }` by node id, and only join ports of one kind.
+/// failed. `comments` are notes left on the node, each showing its first four lines with the
+/// whole text in its title; pressing one fires `atelier:node-comment` with `{ id, index, target }`
+/// for the application to edit over `target` (with `inlineEdit`, multiline) and `update` the node.
+/// Wires are `{ from, output, to, input }` by node id, and only join ports of one kind.
 ///
 /// The person drags nodes, draws wires from an output to an input, picks a wire up by its
 /// input, pans with the background or the wheel, and deletes the selected node with Delete.
 /// What they do fires `atelier:node-select`, `node-move`, `node-connect`, `node-disconnect`,
 /// `node-remove`, `node-keep` and `node-undo` on `root`, after the canvas has applied it.
+/// How many lines of a node's comment show on the canvas, as `graph::COMMENT_LINES`.
+const COMMENT_LINES = 4;
+
 export function nodeCanvas(root, { portTypes = [], nodes = [], wires = [], legend = true, labels = {} } = {}) {
   const words = { addedByAgent: "Added by the assistant", keep: "Keep", undo: "Undo", resetView: "Reset view", queued: "Queued", cached: "Cached", ...labels };
   const graph = new Map();
@@ -1211,6 +1685,18 @@ export function nodeCanvas(root, { portTypes = [], nodes = [], wires = [], legen
       }
       card.append(fields);
     }
+    if (node.comments?.length) {
+      const notes = element("div", "at-node__comments");
+      node.comments.forEach((text, index) => {
+        const lines = String(text).split("\n");
+        const preview = lines.length > COMMENT_LINES ? `${lines.slice(0, COMMENT_LINES).join("\n")}…` : String(text);
+        const note = element("div", "at-node__comment", preview);
+        note.dataset.index = String(index);
+        note.title = String(text);
+        notes.append(note);
+      });
+      card.append(notes);
+    }
     if (node.byAgent) {
       const footer = element("div", "at-node__agent", words.addedByAgent);
       const buttons = element("div");
@@ -1286,6 +1772,21 @@ export function nodeCanvas(root, { portTypes = [], nodes = [], wires = [], legen
     root.focus({ preventScroll: true });
     const socket = event.target.closest(".at-node__socket");
     const card = event.target.closest(".at-node");
+    const note = event.target.closest(".at-node__comment");
+    if (note && card && event.button === 0) {
+      // A note asks to be edited; the node is selected but stays where it is.
+      const id = Number(card.dataset.node);
+      if (selected !== id) {
+        api.select(id);
+        emit("node-select", { id });
+      }
+      // Selecting redraws the cards, so the note is found again in the new one.
+      const index = Number(note.dataset.index);
+      const target = layer.querySelector(`.at-node[data-node="${id}"] .at-node__comment[data-index="${index}"]`) || note;
+      emit("node-comment", { id, index, target });
+      event.preventDefault();
+      return;
+    }
     if (socket && card) {
       const id = Number(card.dataset.node);
       const index = Number(socket.dataset.index);
@@ -1992,5 +2493,80 @@ export function conversationList(root, { conversations = [], selected = null, ar
       input.value = text;
       draw();
     },
+  };
+}
+
+// ---------------------------------------------------------------- log
+
+/// `LogView`'s counterpart: `lines` are `{ key, message, time, level, source }`, oldest first,
+/// with `level` one of `"error"`, `"warn"`, `"info"`, `"debug"`, `"trace"`. A copy of a
+/// selection in it gives each record touched on a line of its own, its parts as a terminal
+/// writes them: `12s WARN app::audio: lost the device`, the source in full where the column cuts
+/// it. Returns `{ push(line), update(lines) }`.
+export function logView(root, { lines = [] } = {}) {
+  root.classList.add("at-log");
+  const row = (line) => {
+    const node = element("div", "at-log__line");
+    if (line.key != null) node.dataset.key = line.key;
+    if (line.time != null) node.append(element("span", "at-log__time", line.time));
+    if (line.level) {
+      const level = element("span", "at-log__level", line.level.toUpperCase());
+      level.dataset.level = line.level;
+      node.append(level);
+    }
+    if (line.source != null) {
+      const source = element("span", "at-log__source", line.source);
+      source.title = line.source;
+      node.append(source);
+    }
+    node.append(element("span", "at-log__message", line.message ?? ""));
+    return node;
+  };
+  const update = (next) => root.replaceChildren(...next.map(row));
+  update(lines);
+  root.addEventListener("copy", (event) => {
+    const selection = document.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    // The selected part of one piece of a record.
+    const part = (node) => {
+      if (!range.intersectsNode(node)) return null;
+      const piece = document.createRange();
+      piece.selectNodeContents(node);
+      if (range.compareBoundaryPoints(Range.START_TO_START, piece) > 0) {
+        piece.setStart(range.startContainer, range.startOffset);
+      }
+      if (range.compareBoundaryPoints(Range.END_TO_END, piece) < 0) {
+        piece.setEnd(range.endContainer, range.endOffset);
+      }
+      const text = piece.toString();
+      return text === "" ? null : text;
+    };
+    const copied = [];
+    for (const line of root.querySelectorAll(".at-log__line")) {
+      let text = "";
+      let pending = "";
+      for (const [selector, after] of [["time", " "], ["level", " "], ["source", ": "], ["message", ""]]) {
+        const node = line.querySelector(`.at-log__${selector}`);
+        const piece = node && part(node);
+        if (node && !piece && text === "") pending = "";
+        if (piece) {
+          text += (text === "" ? "" : pending) + piece;
+        }
+        if (node) pending = text === "" ? "" : after;
+      }
+      if (text !== "") copied.push(text);
+    }
+    if (copied.length === 0) return;
+    event.clipboardData.setData("text/plain", copied.join("\n"));
+    event.preventDefault();
+  });
+  return {
+    push(line) {
+      const near = root.scrollHeight - root.scrollTop - root.clientHeight <= TAIL_SLACK;
+      root.append(row(line));
+      if (near) root.scrollTop = root.scrollHeight;
+    },
+    update,
   };
 }

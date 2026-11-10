@@ -9,6 +9,7 @@ Knowledge Garden のロゴ（記号 **Kn**、緑）。[design-language](https://
 | `knowledge-garden/icon.svg` | 標準のロゴ（256 px 以上で番号・版・名前を表示） |
 | `knowledge-garden/icon-medium.svg`, `icon-small.svg` | 小さいサイズ向けの簡略版 |
 | `knowledge-garden/icon.ico` | favicon / Windows 用 |
+| `knowledge-garden/title-bar.png` | デスクトップ版のタイトルバー左上（`TitleBar::app_icon`、Windows・Linux のみ。小さい版を 64 px で） |
 | `knowledge-garden/png/<size>.png` | 16〜1024 px の PNG（`apple-touch-icon` は 256/512 を流用可） |
 | `knowledge-garden/favicon.ico` | Web UI の favicon（`icon.svg` をそのまま 16/32/48 px にラスタライズしたもの） |
 | `knowledge-garden/symbolic.svg` | 単色のシンボル（トレイ・メニューバー等） |

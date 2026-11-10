@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Pinned to a commit of Atelier's main branch: `TextInput` is not in a release yet.
-atelier = { git = "https://github.com/uthree/design-language", rev = "bb373ecf175cb68ae0b0e1c89e01cf5887ca152f", features = ["agents", "runtime-shaders"] }
+atelier = { git = "https://github.com/uthree/design-language", rev = "a3c5f69e1db8d19e7c70bf427250473c77208055", features = ["agents", "runtime-shaders"] }
 gpui = "=0.2.2"
 knowledge-garden = { path = ".." }
 anyhow = "1"

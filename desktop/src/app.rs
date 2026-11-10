@@ -13,7 +13,7 @@ use gpui::{
 use knowledge_garden::model::EntryKind;
 
 use crate::api::{Client, GardenInfo, Me};
-use crate::assets::APP_ICON;
+use crate::assets::TITLE_BAR_ICON;
 use crate::local_server::{LocalServer, ServerEvent, ServerStatus};
 use crate::pages::account::AccountPage;
 use crate::pages::browse::BrowsePage;
@@ -694,23 +694,17 @@ impl Render for GardenApp {
             .flex_col()
             .child(
                 TitleBar::new()
+                    .app_icon(IconSource::image(TITLE_BAR_ICON))
                     .leading(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(theme.spacing.xs)
-                            .child(Avatar::logo(IconSource::image(APP_ICON)).size(px(20.)))
-                            .child(
-                                Button::new("garden-switcher", garden_name)
-                                    .ghost()
-                                    .size(ControlSize::Small)
-                                    .icon_after(IconName::ChevronDown)
-                                    .tooltip("接続先の Garden を切り替える")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.switcher_open = !this.switcher_open;
-                                        cx.notify();
-                                    })),
-                            ),
+                        Button::new("garden-switcher", garden_name)
+                            .ghost()
+                            .size(ControlSize::Small)
+                            .icon_after(IconName::ChevronDown)
+                            .tooltip("接続先の Garden を切り替える")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.switcher_open = !this.switcher_open;
+                                cx.notify();
+                            })),
                     )
                     .leading(
                         Button::icon_only("back", IconName::ChevronLeft)
