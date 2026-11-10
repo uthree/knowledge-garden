@@ -1,0 +1,128 @@
+# Builds the desktop app for a `desktop-vX.Y.Z` tag and publishes a release with one archive per
+# platform. The app's updater (desktop/src/update.rs) looks for these exact names and checks
+# each download against the SHA-256 digest GitHub records for the asset.
+name: Desktop release
+
+on:
+  push:
+    tags: ["desktop-v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          version=$(grep -m1 '^version' desktop/Cargo.toml | cut -d'"' -f2)
+          if [ "desktop-v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match desktop/Cargo.toml version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    name: Build (${{ matrix.suffix }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: macos-latest
+            suffix: macos-aarch64.tar.gz
+          - os: windows-latest
+            suffix: windows-x86_64.zip
+          - os: ubuntu-latest
+            suffix: linux-x86_64.tar.gz
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ARCHIVE: knowledge-garden-desktop-v${{ needs.version.outputs.version }}-${{ matrix.suffix }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-dev libwayland-dev libvulkan-dev libfontconfig-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked -p desktop
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          app="dist/Knowledge Garden.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp target/release/knowledge-garden-desktop "$app/Contents/MacOS/"
+          cp assets/app-icons/knowledge-garden/icon.icns "$app/Contents/Resources/AppIcon.icns"
+          cat > "$app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>Knowledge Garden</string>
+            <key>CFBundleDisplayName</key><string>Knowledge Garden</string>
+            <key>CFBundleIdentifier</key><string>io.github.uthree.knowledge-garden</string>
+            <key>CFBundleExecutable</key><string>knowledge-garden-desktop</string>
+            <key>CFBundleIconFile</key><string>AppIcon</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$VERSION</string>
+            <key>CFBundleVersion</key><string>$VERSION</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          EOF
+          # Ad-hoc signature: Apple silicon runs only signed code.
+          codesign --force --deep --sign - "$app"
+          tar -czf "$ARCHIVE" -C dist "Knowledge Garden.app"
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          dir="dist/knowledge-garden-desktop-v$VERSION-linux-x86_64"
+          mkdir -p "$dir"
+          cp target/release/knowledge-garden-desktop "$dir/"
+          cp assets/app-icons/knowledge-garden/png/256.png "$dir/knowledge-garden.png"
+          cp LICENSE* README.md "$dir/" 2>/dev/null || true
+          tar -czf "$ARCHIVE" -C dist "$(basename "$dir")"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = "dist/knowledge-garden-desktop-v$env:VERSION-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item target/release/knowledge-garden-desktop.exe $dir
+          Copy-Item README.md $dir
+          Compress-Archive -Path $dir -DestinationPath $env:ARCHIVE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Knowledge Garden デスクトップ版 $VERSION" \
+            --notes "デスクトップ版 $VERSION。macOS（Apple シリコン）、Windows（x86_64）、Linux（x86_64）。入っている版は起動中に自動でこのリリースを見つけて更新します。"

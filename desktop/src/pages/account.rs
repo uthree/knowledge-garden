@@ -3,7 +3,7 @@
 use atelier::prelude::*;
 use atelier::{
     Card, Checkbox, CopyButton, FormField, FormGroup, IconName, ListItem, SectionHeader, Segment, SegmentedControl,
-    TextInput, Tone,
+    Switch, TextInput, Tone,
 };
 use gpui::prelude::*;
 use gpui::{Context, Entity, EventEmitter, Window, div, px};
@@ -13,6 +13,7 @@ use crate::api::ApiError;
 use crate::app::{Nav, Session};
 use crate::runtime;
 use crate::settings::{AppearanceChoice, Settings};
+use crate::update::{self, UpdateState, Updater};
 use crate::widgets::{self, local_time};
 
 /// A secret shown once, right after it was issued.
@@ -34,6 +35,8 @@ pub struct AccountPage {
     shown: Option<Shown>,
     busy: bool,
     error: Option<String>,
+    updater: Entity<Updater>,
+    _observe_updater: gpui::Subscription,
 }
 
 impl EventEmitter<Nav> for AccountPage {}
@@ -52,8 +55,16 @@ pub fn mcp_command(base_url: &str, secret: &str) -> String {
 }
 
 impl AccountPage {
-    pub fn new(session: Option<Session>, settings: Settings, _: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        session: Option<Session>,
+        settings: Settings,
+        updater: Entity<Updater>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
+            _observe_updater: cx.observe(&updater, |_, _, cx| cx.notify()),
+            updater,
             session,
             settings,
             tokens: Vec::new(),
@@ -93,6 +104,94 @@ impl AccountPage {
         self.settings.appearance = choice;
         cx.emit(Nav::SettingsChanged(self.settings.clone()));
         cx.notify();
+    }
+
+    fn toggle_auto_update(&mut self, cx: &mut Context<Self>) {
+        self.settings.update.auto_check = !self.settings.update.auto_check;
+        cx.emit(Nav::SettingsChanged(self.settings.clone()));
+        cx.notify();
+    }
+
+    fn update_group(&self, cx: &mut Context<Self>) -> FormGroup {
+        let theme = cx.theme().clone();
+        let updater = self.updater.read(cx);
+        let (status, color) = match updater.state() {
+            UpdateState::Idle => ("まだ確認していません".to_string(), TextColor::Muted),
+            UpdateState::Checking => ("確認しています…".into(), TextColor::Muted),
+            UpdateState::UpToDate => ("最新の版です".into(), TextColor::Success),
+            UpdateState::Manual(a) => (
+                format!(
+                    "バージョン {} が出ています。この版は自分では入れ替えられないので、リリースページから入れてください",
+                    a.version
+                ),
+                TextColor::Accent,
+            ),
+            UpdateState::Downloading { available, received } => (
+                match &available.asset {
+                    Some(asset) if asset.size > 0 => format!(
+                        "バージョン {} をダウンロードしています（{}%）",
+                        available.version,
+                        received * 100 / asset.size
+                    ),
+                    _ => format!("バージョン {} をダウンロードしています", available.version),
+                },
+                TextColor::Muted,
+            ),
+            UpdateState::Ready(a) => (
+                format!("バージョン {} を入れました。再起動すると切り替わります", a.version),
+                TextColor::Accent,
+            ),
+            UpdateState::Failed(e) => (format!("更新できませんでした: {e}"), TextColor::Danger),
+        };
+        let busy = matches!(updater.state(), UpdateState::Checking | UpdateState::Downloading { .. });
+        let action = match updater.state() {
+            UpdateState::Ready(_) => Button::new("relaunch-now", "再起動して更新")
+                .primary()
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(Nav::Relaunch)))
+                .into_any_element(),
+            UpdateState::Manual(a) => {
+                let page = a.page();
+                Button::new("open-release", "リリースページを開く")
+                    .icon(IconName::ArrowUp)
+                    .on_click(move |_, _, cx| cx.open_url(&page))
+                    .into_any_element()
+            }
+            _ => Button::new("check-update", "今すぐ確認")
+                .disabled(busy)
+                .on_click(cx.listener(|this, _, _, cx| this.updater.update(cx, |u, cx| u.check(cx))))
+                .into_any_element(),
+        };
+        let installable = updater.installable();
+        FormGroup::new("アップデート")
+            .description(if installable {
+                "新しいリリースが出ると裏でダウンロードして入れ替え、再起動を案内します。"
+            } else {
+                "開発用のビルドや書き込めない場所に置いた版は自分では更新せず、リリースページを案内します。"
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme.spacing.md)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(Label::new(format!("バージョン {}", update::current_version())))
+                            .child(Label::new(status).size(TextSize::Small).color(color)),
+                    )
+                    .child(action),
+            )
+            .child(
+                FormField::new("自動で確認する")
+                    .description("起動の少しあとと、その後は数時間ごと。切り替えは次の起動から")
+                    .child(
+                        Switch::new("auto-update", self.settings.update.auto_check)
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_auto_update(cx))),
+                    ),
+            )
     }
 
     fn set_direction(&mut self, direction: atelier::Direction, cx: &mut Context<Self>) {
@@ -464,6 +563,7 @@ impl Render for AccountPage {
                 );
             }
         }
+        page = page.child(self.update_group(cx));
         page = page.children(self.error.clone().map(|e| Label::new(e).color(TextColor::Danger)));
         div().id("account").size_full().overflow_y_scroll().child(page)
     }
