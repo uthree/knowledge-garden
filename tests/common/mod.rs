@@ -30,9 +30,10 @@ impl Garden {
 
     /// Builds a Garden whose outgoing requests to other Gardens go through `client`.
     pub async fn with_peer_client(
-        config: Config,
+        mut config: Config,
         client: Option<std::sync::Arc<dyn knowledge_garden::federation::PeerClient>>,
     ) -> Self {
+        config.files_dir = std::env::temp_dir().join(format!("kg-test-files-{}", uuid::Uuid::now_v7()));
         let store = SqliteStore::connect("sqlite::memory:").await.unwrap();
         let user = store
             .create_user(NewUser {
@@ -88,6 +89,44 @@ impl Garden {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         (status, value)
+    }
+
+    /// Sends a raw body (a file upload) and returns the response with its body bytes.
+    pub async fn raw(
+        &self,
+        method: Method,
+        uri: &str,
+        headers: &[(&str, &str)],
+        body: Vec<u8>,
+    ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+        let mut req = Request::builder().method(method).uri(uri);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let resp = self
+            .app
+            .clone()
+            .oneshot(req.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+        (status, headers, bytes)
+    }
+
+    /// Uploads `bytes` as attachment `name` of entry `id`.
+    pub async fn upload(&self, token: &str, id: &str, name: &str, bytes: &[u8]) -> (StatusCode, Value) {
+        let auth = format!("Bearer {token}");
+        let (s, _, body) = self
+            .raw(
+                Method::POST,
+                &format!("/api/v1/entries/{id}/attachments?name={name}"),
+                &[("authorization", &auth)],
+                bytes.to_vec(),
+            )
+            .await;
+        (s, serde_json::from_slice(&body).unwrap_or(Value::Null))
     }
 
     pub async fn get(&self, uri: &str, token: Option<&str>) -> (StatusCode, Value) {

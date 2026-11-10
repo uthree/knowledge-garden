@@ -1,4 +1,5 @@
 pub(crate) mod accounts;
+pub(crate) mod attachments;
 pub(crate) mod comments;
 pub(crate) mod entries;
 mod federation;
@@ -7,6 +8,7 @@ pub(crate) mod search;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
+use axum::handler::Handler;
 use axum::middleware::map_response;
 use axum::routing::{delete, get, post};
 
@@ -30,6 +32,14 @@ pub fn rest_router(state: AppState) -> Router {
         .route("/entries/{id}/versions/{version}", get(entries::get_version))
         .route("/entries/{id}/links", get(entries::links).post(entries::add_link))
         .route("/entries/{id}/comments", get(comments::list).post(comments::create))
+        .route(
+            "/entries/{id}/attachments",
+            get(attachments::list).post(attachments::upload.layer(DefaultBodyLimit::disable())),
+        )
+        .route(
+            "/entries/{id}/attachments/{name}",
+            get(attachments::download).delete(attachments::delete),
+        )
         .route("/tags", get(entries::tags))
         .route("/search", get(search::search))
         .route("/peers", get(federation::list_peers).post(federation::add_peer))
@@ -40,6 +50,7 @@ pub fn rest_router(state: AppState) -> Router {
         .route("/health", get(|| async { "ok" }))
         .route(crate::federation::WELL_KNOWN_PATH, get(federation::well_known))
         .route(crate::federation::FEED_PATH, get(federation::feed))
+        .route(crate::federation::FILES_PATH, get(federation::file))
         // `/` and entry URIs (`<base_url>/entries/<id>`) are served by the web
         // router, which answers JSON to clients that do not ask for HTML.
         .nest("/api/v1", api)

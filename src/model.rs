@@ -196,6 +196,38 @@ pub struct Entry {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub version_created_at: DateTime<Utc>,
+    /// Files attached to the entry (shared by all versions).
+    pub attachments: Vec<Attachment>,
+}
+
+/// A file attached to an entry. Anyone who can read the entry can read its files.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Attachment {
+    pub name: String,
+    pub content_type: String,
+    pub size: i64,
+    pub sha256: String,
+    /// How the web UI shows it inline: image, audio, video, pdf, text or none.
+    pub preview: crate::files::Preview,
+    /// Download URL (needs the same credentials as the entry).
+    pub url: String,
+    /// Markdown that embeds (or links to) the file in the entry body.
+    pub markdown: String,
+    pub posted_via: PostedVia,
+    pub created_at: DateTime<Utc>,
+}
+
+impl Attachment {
+    /// Fills in the fields that depend on where the file is served.
+    pub fn locate(mut self, config: &crate::config::Config, entry_id: &str) -> Self {
+        self.url = config.attachment_url(entry_id, &self.name);
+        self.markdown = if self.preview.embeds() {
+            format!("![{}](attachment:{})", self.name, self.name)
+        } else {
+            format!("[{}](attachment:{})", self.name, self.name)
+        };
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

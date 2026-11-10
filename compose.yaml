@@ -14,7 +14,8 @@ services:
       # KG_REGISTRATION: invite        # invite | open | closed
       # KG_GUEST_READ: "true"          # let people read public entries without signing in
       # KG_SYNC_INTERVAL_SECS: "300"   # how often to pull from approved peer Gardens
+      # KG_MAX_ATTACHMENT_MB: "100"    # largest file that can be attached to an entry
     volumes:
-      # The database and backups live here. The container runs as uid 1000:
+      # The database, attached files (data/files) and backups live here. The container runs as uid 1000:
       # `sudo chown -R 1000:1000 data` once if the folder belongs to another user.
       - ./data:/data

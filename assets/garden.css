@@ -243,6 +243,116 @@ a.at-list-item {
   max-width: 100%;
 }
 
+/* ---------------------------------------------------------------- attachments */
+
+/* Players and viewers put in the body by ![caption](attachment:name). */
+.kg-embed {
+  display: flex;
+  flex-direction: column;
+  gap: var(--at-space-xs);
+  max-width: 100%;
+}
+
+.kg-embed img,
+.kg-embed video {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--at-radius-md);
+}
+
+.kg-embed audio {
+  width: min(100%, 32em);
+}
+
+.kg-embed iframe {
+  width: 100%;
+  border: 1px solid var(--at-border);
+  border-radius: var(--at-radius-md);
+  background: #fff;
+}
+
+.kg-embed--pdf iframe {
+  height: min(80vh, 56em);
+}
+
+.kg-embed--text iframe {
+  height: 18em;
+}
+
+.kg-embed__caption {
+  color: var(--at-text-muted);
+  font-size: var(--at-size-sm);
+}
+
+.kg-embed--missing {
+  display: inline-block;
+  padding: var(--at-space-xs) var(--at-space-sm);
+  border: 1px dashed var(--at-border);
+  border-radius: var(--at-radius-md);
+  color: var(--at-text-muted);
+  font-size: var(--at-size-sm);
+}
+
+.kg-section__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--at-space-sm);
+}
+
+.kg-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: var(--at-space-md);
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.kg-attachment {
+  display: flex;
+  flex-direction: column;
+  gap: var(--at-space-sm);
+}
+
+.kg-attachment__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--at-space-sm);
+}
+
+.kg-attachment__row form {
+  margin: 0;
+}
+
+.kg-attachment__name {
+  overflow-wrap: anywhere;
+}
+
+.kg-attachment__thumb {
+  width: 3em;
+  height: 3em;
+  object-fit: cover;
+  border-radius: var(--at-radius-sm, 4px);
+}
+
+.kg-attachment__preview .kg-embed img {
+  max-height: 24em;
+  width: auto;
+}
+
+.kg-attachments-editor {
+  margin-top: var(--at-space-xl, 2em);
+}
+
+.kg-check {
+  display: flex;
+  align-items: center;
+  gap: var(--at-space-sm);
+}
+
 .kg-section {
   display: flex;
   flex-direction: column;

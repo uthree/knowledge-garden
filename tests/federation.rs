@@ -42,6 +42,24 @@ impl PeerClient for Network {
             body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         })
     }
+
+    async fn get_bytes(&self, url: &str, headers: Vec<(String, String)>, max: u64) -> Result<(u16, Vec<u8>)> {
+        let parsed = url::Url::parse(url).unwrap();
+        let base = format!("{}://{}", parsed.scheme(), parsed.host_str().unwrap());
+        let app = self.0.lock().unwrap().get(&base).cloned();
+        let app = app.ok_or_else(|| Error::BadRequest(format!("could not reach {url}")))?;
+        let mut req = Request::builder().method(Method::GET).uri(&url[base.len()..]);
+        for (k, v) in headers {
+            req = req.header(k, v);
+        }
+        let resp = app.oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+        let status = resp.status().as_u16();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+        if bytes.len() as u64 > max {
+            return Err(Error::PayloadTooLarge("too large".into()));
+        }
+        Ok((status, bytes))
+    }
 }
 
 async fn pair() -> (Garden, Garden, Arc<Network>) {
@@ -330,4 +348,108 @@ async fn adding_peers_is_validated() {
     approve(&a, B).await;
     let (s, _) = a.post("/api/v1/peers", Some(&a.admin), json!({ "base_url": B })).await;
     assert_eq!(s, StatusCode::CONFLICT, "duplicate");
+}
+
+#[tokio::test]
+async fn mirrors_attached_files() {
+    let (a, b, _) = pair().await;
+    let alice = a.member("alice").await;
+    let public = a
+        .entry(
+            &alice,
+            json!({ "kind": "research_note", "title": "音声の実験", "body": "![](attachment:voice.mp3)" }),
+        )
+        .await["entry"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, voice) = a.upload(&alice, &public, "voice.mp3", b"ID3 fake audio").await;
+    assert_eq!(s, StatusCode::CREATED);
+    let sha = voice["sha256"].as_str().unwrap().to_string();
+    a.upload(&alice, &public, "notes.txt", b"plain notes").await;
+    let members = a
+        .entry(
+            &alice,
+            json!({ "kind": "memo", "title": "内部", "body": "x", "visibility": "members" }),
+        )
+        .await["entry"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, secret) = a.upload(&alice, &members, "secret.txt", b"members only").await;
+
+    // The file endpoint needs a signed request from an approved peer, and only serves shared files.
+    let (s, _) = a.get(&format!("/federation/v1/files/{sha}"), None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+
+    approve(&a, B).await;
+    let a_on_b = approve(&b, A).await;
+    let report = sync(&b, &a_on_b).await;
+    assert_eq!(report["created"], 1, "{report}");
+    assert_eq!(report["rejected"], json!([]));
+
+    let (_, hits) = b.get("/api/v1/entries?origin=remote", None).await;
+    let mirror = hits["items"][0]["id"].as_str().unwrap().to_string();
+    let (_, files) = b.get(&format!("/api/v1/entries/{mirror}/attachments"), None).await;
+    let names: Vec<&str> = files
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["notes.txt", "voice.mp3"]);
+    assert_eq!(files[1]["url"], format!("{B}/entries/{mirror}/files/voice.mp3"));
+    let (s, _, body) = b
+        .raw(Method::GET, &format!("/entries/{mirror}/files/voice.mp3"), &[], vec![])
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(body, b"ID3 fake audio");
+
+    // Mirrors are read-only, files included.
+    assert_eq!(
+        b.upload(&b.admin, &mirror, "x.txt", b"x").await.0,
+        StatusCode::FORBIDDEN
+    );
+
+    // A members-only file never left A.
+    let (s, _, _) = b
+        .raw(
+            Method::GET,
+            &format!("/federation/v1/files/{}", secret["sha256"].as_str().unwrap()),
+            &[],
+            vec![],
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+
+    // Removing a file on A removes it from the mirror.
+    let auth = format!("Bearer {alice}");
+    let (s, _, _) = a
+        .raw(
+            Method::DELETE,
+            &format!("/api/v1/entries/{public}/attachments/notes.txt"),
+            &[("authorization", &auth)],
+            vec![],
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let report = sync(&b, &a_on_b).await;
+    assert_eq!(report["updated"], 1, "{report}");
+    let (_, files) = b.get(&format!("/api/v1/entries/{mirror}/attachments"), None).await;
+    assert_eq!(files.as_array().unwrap().len(), 1);
+
+    // Withdrawing the entry hides it and drops its files on B.
+    a.call(
+        Method::PATCH,
+        &format!("/api/v1/entries/{public}"),
+        Some(&alice),
+        Some(json!({ "visibility": "private" })),
+    )
+    .await;
+    let report = sync(&b, &a_on_b).await;
+    assert_eq!(report["withdrawn"], 1, "{report}");
+    let (s, _, _) = b
+        .raw(Method::GET, &format!("/entries/{mirror}/files/voice.mp3"), &[], vec![])
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
 }

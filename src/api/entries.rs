@@ -35,7 +35,7 @@ pub async fn kinds() -> Json<Value> {
 }
 
 /// Loads an entry's access facts, returning 404 if it is missing or not readable.
-pub(super) async fn readable_entry(state: &AppState, viewer: Option<&Principal>, id: &str) -> Result<EntryAccess> {
+pub(crate) async fn readable_entry(state: &AppState, viewer: Option<&Principal>, id: &str) -> Result<EntryAccess> {
     state
         .store
         .entry_access(id)
@@ -44,7 +44,7 @@ pub(super) async fn readable_entry(state: &AppState, viewer: Option<&Principal>,
         .ok_or(Error::NotFound)
 }
 
-async fn editable_entry(state: &AppState, auth: &Auth, id: &str) -> Result<EntryAccess> {
+pub(crate) async fn editable_entry(state: &AppState, auth: &Auth, id: &str) -> Result<EntryAccess> {
     auth.require(Scope::EntriesWrite)?;
     let entry = readable_entry(state, Some(&auth.0), id).await?;
     if !entry.is_local {
@@ -243,7 +243,8 @@ pub async fn get(
     Query(q): Query<GetQuery>,
 ) -> Result<Json<Entry>> {
     readable_entry(&state, viewer.as_ref(), &id).await?;
-    let entry = state.store.get_entry(&id, q.version).await?.ok_or(Error::NotFound)?;
+    let mut entry = state.store.get_entry(&id, q.version).await?.ok_or(Error::NotFound)?;
+    entry.attachments = super::attachments::attachments_of(&state, &id).await?;
     Ok(Json(entry))
 }
 

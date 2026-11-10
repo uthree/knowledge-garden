@@ -23,6 +23,8 @@ pub enum Error {
     Conflict(String),
     #[error("{0}")]
     TooManyRequests(String),
+    #[error("{0}")]
+    PayloadTooLarge(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -46,7 +48,7 @@ impl Error {
     pub fn is_correctable(&self) -> bool {
         matches!(
             self,
-            Error::BadRequest(_) | Error::Forbidden(_) | Error::TooManyRequests(_)
+            Error::BadRequest(_) | Error::Forbidden(_) | Error::TooManyRequests(_) | Error::PayloadTooLarge(_)
         )
     }
 
@@ -58,6 +60,7 @@ impl Error {
             Error::Forbidden(_) => (StatusCode::FORBIDDEN, "forbidden"),
             Error::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
             Error::TooManyRequests(_) => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+            Error::PayloadTooLarge(_) => (StatusCode::PAYLOAD_TOO_LARGE, "too_large"),
             Error::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }
     }
