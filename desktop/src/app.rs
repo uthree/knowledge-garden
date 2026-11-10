@@ -12,6 +12,7 @@ use gpui::{
 };
 use knowledge_garden::model::EntryKind;
 
+use crate::agent::{AgentPanelView, Article};
 use crate::api::{Client, GardenInfo, Me};
 use crate::assets::APP_ICON;
 use crate::local_server::{LocalServer, ServerEvent, ServerStatus};
@@ -22,10 +23,12 @@ use crate::pages::connect::ConnectPage;
 use crate::pages::entry::EntryPage;
 use crate::pages::server::ServerPage;
 use crate::runtime;
-use crate::settings::{Connection, ConnectionKind, LOCAL_CONNECTION_ID, LocalServerSettings, Settings, SettingsStore};
+use crate::settings::{
+    AgentSettings, Connection, ConnectionKind, LOCAL_CONNECTION_ID, LocalServerSettings, Settings, SettingsStore,
+};
 use crate::widgets::{kind_icon, kind_label};
 
-actions!(garden, [NewEntry, FocusSearch, Back, Reload]);
+actions!(garden, [NewEntry, FocusSearch, Back, Reload, ToggleAgent]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -34,6 +37,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-k", FocusSearch, None),
         KeyBinding::new("secondary-r", Reload, None),
         KeyBinding::new("alt-left", Back, None),
+        KeyBinding::new("secondary-j", ToggleAgent, None),
     ]);
 }
 
@@ -106,6 +110,11 @@ pub enum Nav {
     Server(ServerAction),
     /// Open the settings page (to issue an agent API key).
     Account,
+    /// The entry page finished loading its entry.
+    EntryLoaded,
+    /// The agent panel's backends or choice changed; save them.
+    AgentChanged(AgentSettings),
+    ToggleAgent,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -139,6 +148,7 @@ pub struct GardenApp {
     account: Option<Entity<AccountPage>>,
     server: Entity<LocalServer>,
     server_page: Option<Entity<ServerPage>>,
+    agent: Entity<AgentPanelView>,
     /// Switch to the local Garden once its server is up.
     open_when_started: bool,
     status: Option<(SharedString, Tone)>,
@@ -156,6 +166,13 @@ impl GardenApp {
         subscriptions.push(cx.observe_window_appearance(window, |this, window, cx| {
             this.apply_theme(window, cx);
         }));
+        let agent = {
+            let agent_settings = settings.agent.clone();
+            let store = store.clone();
+            cx.new(|cx| AgentPanelView::new(agent_settings, store, window, cx))
+        };
+        subscriptions.push(cx.subscribe_in(&agent, window, Self::on_nav));
+        subscriptions.push(cx.observe(&agent, |_, _, cx| cx.notify()));
         let server = cx.new(LocalServer::new);
         subscriptions.push(cx.subscribe_in(&server, window, Self::on_server));
         subscriptions.push(cx.observe(&server, |_, _, cx| cx.notify()));
@@ -173,6 +190,7 @@ impl GardenApp {
             account: None,
             server,
             server_page: None,
+            agent,
             open_when_started: false,
             status: None,
             switcher_open: false,
@@ -402,9 +420,30 @@ impl GardenApp {
         self._subscriptions.push(cx.subscribe_in(&browse, window, Self::on_nav));
         self.browse = Some(browse);
         self.account = None;
+        let for_agent = session.clone();
+        self.agent.update(cx, |a, cx| a.set_session(Some(for_agent), cx));
         self.session = Some(session);
         self.history.clear();
         self.page = Page::Browse;
+        self.sync_article(cx);
+        cx.notify();
+    }
+
+    /// Tells the agent panel which entry is in view.
+    fn sync_article(&mut self, cx: &mut Context<Self>) {
+        let article = match &self.page {
+            Page::Entry(page) => page.read(cx).entry().map(Article::from_entry),
+            _ => None,
+        };
+        self.agent.update(cx, |a, cx| a.set_article(article, cx));
+    }
+
+    fn toggle_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings.agent.panel_open = !self.settings.agent.panel_open;
+        self.save_settings(cx);
+        if self.settings.agent.panel_open {
+            self.agent.update(cx, |a, cx| a.focus(window, cx));
+        }
         cx.notify();
     }
 
@@ -414,12 +453,14 @@ impl GardenApp {
         if self.history.len() > 50 {
             self.history.remove(0);
         }
+        self.sync_article(cx);
         cx.notify();
     }
 
     fn back(&mut self, _: &Back, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(page) = self.history.pop() {
             self.page = page;
+            self.sync_article(cx);
             cx.notify();
         }
     }
@@ -509,6 +550,17 @@ impl GardenApp {
             }
             Nav::Server(action) => self.server_action(action, cx),
             Nav::Account => self.account_page(window, cx),
+            Nav::EntryLoaded => self.sync_article(cx),
+            Nav::AgentChanged(agent) => {
+                // Whether the panel is open is the window's to say.
+                let open = self.settings.agent.panel_open;
+                self.settings.agent = AgentSettings {
+                    panel_open: open,
+                    ..agent
+                };
+                self.save_settings(cx);
+            }
+            Nav::ToggleAgent => self.toggle_agent(window, cx),
             Nav::SettingsChanged(settings) => {
                 self.settings = settings;
                 self.save_settings(cx);
@@ -721,7 +773,15 @@ impl Render for GardenApp {
                             .shortcut_for(&Back)
                             .on_click(cx.listener(|this, _, window, cx| this.back(&Back, window, cx))),
                     )
-                    .title("Knowledge Garden"),
+                    .title("Knowledge Garden")
+                    .trailing(
+                        atelier::agent::AgentToggle::new(
+                            "agent-toggle",
+                            self.settings.agent.panel_open,
+                            self.agent.read(cx).status(),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_agent(window, cx))),
+                    ),
             )
             .child(
                 div()
@@ -729,6 +789,7 @@ impl Render for GardenApp {
                     .key_context("GardenApp")
                     .track_focus(&self.focus)
                     .on_action(cx.listener(Self::back))
+                    .on_action(cx.listener(|this, _: &ToggleAgent, window, cx| this.toggle_agent(window, cx)))
                     .on_action(cx.listener(|this, _: &NewEntry, window, cx| this.compose(None, window, cx)))
                     .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
                         if let Some(b) = this.browse.clone() {
@@ -758,7 +819,16 @@ impl Render for GardenApp {
                             .min_w_0()
                             .bg(theme.colors.surface)
                             .child(content),
-                    ),
+                    )
+                    .when(self.settings.agent.panel_open, |body| {
+                        body.child(Divider::vertical().full()).child(
+                            div()
+                                .w(crate::agent::PANEL_WIDTH)
+                                .flex_none()
+                                .h_full()
+                                .child(self.agent.clone()),
+                        )
+                    }),
             )
             .child(self.status_bar(cx))
             .children(switcher.map(|menu| {

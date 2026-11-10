@@ -3,6 +3,7 @@
 
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 
+mod agent;
 mod api;
 mod app;
 mod assets;
