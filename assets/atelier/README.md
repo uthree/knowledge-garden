@@ -2,7 +2,7 @@
 
 These files are copied unchanged from the `web/atelier/` directory of
 [uthree/design-language](https://github.com/uthree/design-language)
-(commit `2220fa14a34bed767e53b2fe165af900192328eb`), licensed under Apache-2.0
+(commit `a3c5f69e1db8d19e7c70bf427250473c77208055`), licensed under Apache-2.0
 (see `LICENSE`). The server embeds them and serves them under `/assets/atelier/`.
 
 To update, copy `atelier.css`, `atelier.js`, `generated/tokens.css` and
