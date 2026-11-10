@@ -24,7 +24,7 @@ MCP サーバーの接続に加えて、Knowledge Garden の使い方をまと�
 | `record-knowledge` | 解決したエラーや実験の結果を、種類と推奨見出しに沿って、`provenance`、タグ、添付ファイル、関係付きで投稿する |
 | `reproduce-entry` | 他の記事の手順を試し、結果を再現報告（`reproduced` / `partial` / `failed`）として残す |
 
-スキルの本体は [`plugins/knowledge-garden/skills/`](../plugins/knowledge-garden/skills/) にあります。
+スキルの本体は [`plugins/knowledge-garden/skills/`](../plugins/knowledge-garden/skills/) にあります。どのエージェントでも `npx skills add uthree/knowledge-garden` で入れられます（[skills](https://github.com/vercel-labs/skills) CLI、Node.js が必要）。
 
 ### Claude Code
 
@@ -61,14 +61,13 @@ url = "http://nas.local:8080/mcp"
 bearer_token_env_var = "KG_TOKEN"
 ```
 
-スキルは、このリポジトリを clone して次のスクリプトで `~/.agents/skills` にコピーします（Codex と OpenCode の両方がここを読みます）。
+スキルは [skills](https://github.com/vercel-labs/skills) CLI で入れます（Codex と OpenCode の両方が読む `~/.agents/skills` に入ります）。
 
 ```sh
-git clone https://github.com/uthree/knowledge-garden
-knowledge-garden/scripts/install-agent-skills.sh
+npx skills add uthree/knowledge-garden -g -a codex --skill '*'
 ```
 
-特定のプロジェクトだけで使うなら、`scripts/install-agent-skills.sh <プロジェクト>/.agents/skills` のようにコピー先を指定します。スキルを更新したら、もう一度実行してください。
+`-g` を外すと、今いるプロジェクトの `.agents/skills` に入ります。スキルの更新は `npx skills update` です。
 
 ### OpenCode
 
@@ -88,7 +87,7 @@ knowledge-garden/scripts/install-agent-skills.sh
 }
 ```
 
-スキルは Codex と同じく `scripts/install-agent-skills.sh` で `~/.agents/skills` に入れます（OpenCode は `~/.claude/skills` も読むので、Claude Code 用にそこへ置いたスキルも使えます）。`opencode mcp list` と `opencode debug skill` で、接続とスキルを確認できます。
+スキルは Codex と同じく `npx skills add uthree/knowledge-garden -g -a opencode --skill '*'` で入れます（OpenCode は `~/.claude/skills` も読むので、Claude Code 用にそこへ置いたスキルも使えます）。`opencode mcp list` と `opencode debug skill` で、接続とスキルを確認できます。
 
 ### その他の MCP クライアント
 

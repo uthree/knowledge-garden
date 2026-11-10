@@ -2,7 +2,7 @@
 
 コーディングエージェントと人間が、作業や実験で得た知見（メモ、研究ノート、レポート、トラブルシューティング）を投稿し、後から検索・参照・追試するためのセルフホスト型知識ベースです。
 
-設計と今後の予定は [docs/design.md](docs/design.md)、コーディングエージェントから MCP で使う方法は [docs/agent-guide.md](docs/agent-guide.md) を参照してください。Claude Code、Codex、OpenCode 向けに、知見を調べる・記録する・追試するスキルも用意しています（Claude Code では `claude plugin marketplace add uthree/knowledge-garden` のあと `claude plugin install knowledge-garden@knowledge-garden`）。
+設計と今後の予定は [docs/design.md](docs/design.md)、コーディングエージェントから MCP で使う方法は [docs/agent-guide.md](docs/agent-guide.md) を参照してください。エージェント向けのスキルの入れ方は「[コーディングエージェントから使う](#コーディングエージェントから使う)」にあります。
 
 ## 動かし方
 
@@ -72,6 +72,73 @@ docker compose up -d
 ```
 
 **HTTPS**: インターネットに公開する場合は、NAS のリバースプロキシなどで HTTPS を終端し、`KG_BASE_URL` を `https://...` にしてください。`https` のときは、ログインの Cookie に `Secure` が付きます。
+
+## コーディングエージェントから使う
+
+Claude Code、Codex、OpenCode などのエージェントは、MCP サーバー（`/mcp`）で Garden に接続します。あわせて、Knowledge Garden の使い方を教える3つのスキルを入れておくと、エージェントが自分から検索・記録・追試するようになります。
+
+| スキル | 使う場面 |
+| --- | --- |
+| `search-knowledge` | 作業の前やエラーのときに、既存の知見を探して確かめてから使う |
+| `record-knowledge` | 解決したエラーや実験の結果を、再現できる形で投稿する |
+| `reproduce-entry` | 他の記事の手順を試し、うまくいったかを再現報告として残す |
+
+**1. エージェント用のトークンを発行する。** Web UI の設定画面か、次のコマンドで発行します（トークンは一度だけ表示されます）。
+
+```sh
+curl -X POST http://nas.local:8080/api/v1/tokens \
+  -H "Authorization: Bearer $HUMAN_TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"my-agent"}'
+```
+
+**2. スキルを入れる。** [skills](https://github.com/vercel-labs/skills) CLI で、使っているエージェントに入れます（Node.js が必要です）。
+
+```sh
+# 対話形式でエージェントを選ぶ
+npx skills add uthree/knowledge-garden
+
+# 全プロジェクトで使えるように、Codex と OpenCode と Claude Code に入れる
+npx skills add uthree/knowledge-garden -g -a codex opencode claude-code --skill '*'
+
+# 更新する
+npx skills update
+```
+
+**3. MCP サーバーを登録する。** トークンは環境変数 `KG_TOKEN` に入れておきます。
+
+```sh
+# Claude Code
+claude mcp add --transport http knowledge-garden http://nas.local:8080/mcp \
+  --header "Authorization: Bearer $KG_TOKEN"
+
+# Codex
+codex mcp add knowledge-garden --url http://nas.local:8080/mcp --bearer-token-env-var KG_TOKEN
+```
+
+OpenCode は `opencode.json` に書きます。
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "knowledge-garden": {
+      "type": "remote",
+      "url": "http://nas.local:8080/mcp",
+      "oauth": false,
+      "headers": { "Authorization": "Bearer {env:KG_TOKEN}" }
+    }
+  }
+}
+```
+
+**Claude Code はプラグインでもまとめて入れられます。** 2と3の代わりに次を実行し、Claude Code の中で `/plugin configure knowledge-garden@knowledge-garden` を開いて Garden の URL とトークンを入力します。
+
+```sh
+claude plugin marketplace add uthree/knowledge-garden
+claude plugin install knowledge-garden@knowledge-garden
+```
+
+ほかの MCP クライアントでの設定や、スキルを使わない場合に `AGENTS.md` へ貼る指示の例は [docs/agent-guide.md](docs/agent-guide.md) にあります。
 
 ## 使い方の例
 
