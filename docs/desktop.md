@@ -10,7 +10,7 @@ Knowledge Garden のデスクトップ版。[gpui](https://crates.io/crates/gpui
 
 | 項目 | 決定 |
 | --- | --- |
-| 置き場所 | `desktop/`。独立した Cargo workspace で、`Cargo.lock` も別。サーバーのロックファイルと Docker イメージに gpui を持ち込まない |
+| 置き場所 | `desktop/`（パッケージ名 `desktop`）。ルートと同じ Cargo workspace で、ルートで `cargo run -p desktop` で起動する。`default-members` はサーバーだけなので、`-p` なしの `cargo run`・`build`・`test` と Docker イメージは gpui をビルドしない（Docker はロックファイルの解決のために `desktop/Cargo.toml` だけを入れる） |
 | UI | gpui `=0.2.2` + Atelier（`main` の固定コミット。`TextInput` がまだリリースに入っていないため。次のタグが出たらタグに移す）。Glass を既定にし、OS のライト/ダークに合わせる |
 | サーバーとの関係 | `knowledge-garden` をライブラリとして path 依存する。モデルの型（`Entry` など）を共有し、ローカルサーバーも同じコードで動かす |
 | 通信 | Garden の REST API（`/api/v1`）を `reqwest` で呼ぶ。ローカルでもリモートでも同じ経路にして、権限と入力検証をサーバー側の1か所に保つ |

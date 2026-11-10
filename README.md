@@ -172,10 +172,10 @@ curl -G https://b.example/api/v1/search --data-urlencode 'q=linker' --data-urlen
 
 NAS やサーバーを用意しなくても、「サーバー」画面（または接続先画面の「このコンピューターで始める」）から、アプリの中で Garden を動かせます。初回は OS のユーザー名で管理者を作って自動でログインし、以後はアプリと一緒に起動・終了します。データは OS のデータフォルダ（`KG_DESKTOP_DATA_DIR` で変更可）の `garden.db` に保存され、既定では `127.0.0.1:8787` で待ち受けます。設計は [docs/desktop.md](docs/desktop.md) を参照してください。
 
-リポジトリのルートで次のように起動します（`cargo run --release --manifest-path desktop/Cargo.toml` の別名。`cargo run` はサーバーのままです）。
+リポジトリのルートで次のように起動します（`-p` を付けない `cargo run` はサーバーです）。
 
 ```sh
-cargo desktop
+cargo run -p desktop --release
 ```
 
 Linux では `libxkbcommon-x11-dev libwayland-dev libvulkan-dev libfontconfig-dev` が必要です。macOS は Command Line Tools だけでビルドできます。
@@ -187,6 +187,6 @@ cargo test
 cargo clippy --all-targets
 cargo fmt
 
-# デスクトップ版（別の workspace）
-cd desktop && cargo test && cargo clippy --all-targets && cargo fmt
+# デスクトップ版（同じ workspace の `desktop` パッケージ。-p を付けないとサーバーだけ）
+cargo test -p desktop && cargo clippy -p desktop --all-targets
 ```

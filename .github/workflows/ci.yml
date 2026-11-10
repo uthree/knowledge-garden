@@ -21,7 +21,8 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
-  # The desktop app (desktop/) is its own workspace with its own lockfile.
+  # The desktop app (desktop/, package `desktop`) shares the workspace; the job above builds
+  # only the server (the default member).
   desktop:
     name: Desktop (${{ matrix.os }})
     strategy:
@@ -43,7 +44,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: desktop
+          key: desktop
       - if: runner.os == 'Linux'
         run: cargo fmt --check
       # Atelier's check for workarounds and copies of its components, at the revision we build on.

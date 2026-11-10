@@ -1,15 +1,11 @@
 [package]
-name = "knowledge-garden-desktop"
+name = "desktop"
 description = "Knowledge Garden desktop app (gpui + Atelier)"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 rust-version = "1.95"
 publish = false
-
-# The desktop app is its own workspace with its own Cargo.lock, so the server's
-# lockfile and Docker image do not carry gpui.
-[workspace]
 
 [[bin]]
 name = "knowledge-garden-desktop"
@@ -39,9 +35,3 @@ unicode-segmentation = "1.10"
 [dev-dependencies]
 gpui = { version = "=0.2.2", features = ["test-support"] }
 tempfile = "3"
-
-[profile.dev]
-opt-level = 1
-
-[profile.dev.package."*"]
-opt-level = 3

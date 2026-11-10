@@ -3,6 +3,13 @@ name = "knowledge-garden"
 version = "0.1.0"
 edition = "2024"
 
+# The desktop app (`desktop/`) shares this workspace so `cargo run -p desktop` works from here.
+# `cargo run`, `cargo build` and `cargo test` without `-p` stay on the server, so the server's
+# builds and Docker image do not compile gpui.
+[workspace]
+members = [".", "desktop"]
+default-members = ["."]
+
 [dependencies]
 ammonia = "4.2.4"
 argon2 = "0.6.0"
@@ -35,10 +42,10 @@ uuid = { version = "1.29.1", features = ["v7", "serde"] }
 [dev-dependencies]
 async-trait = "0.1.92"
 
+# Debug builds optimise the dependencies: password hashing is deliberately slow, and gpui's
+# rendering is unusable unoptimised.
+[profile.dev]
+opt-level = 1
 
-# Password hashing is deliberately slow; keep it fast enough in debug builds and tests.
-[profile.dev.package.argon2]
-opt-level = 3
-
-[profile.dev.package.blake2]
+[profile.dev.package."*"]
 opt-level = 3
